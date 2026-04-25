@@ -363,6 +363,22 @@ namespace MCPForUnity.Editor.Services.Transport
 
                 var logType = resourceMeta != null ? "resource" : toolMeta != null ? "tool" : "unknown";
                 var sw = McpLogRecord.IsEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
+
+                var guardDecision = SharedEditorCommandGuard.Evaluate(command.type, parameters);
+                if (!guardDecision.Allowed)
+                {
+                    SharedEditorCommandGuard.LogDecision(guardDecision, parameters, logType, sw?.ElapsedMilliseconds ?? 0);
+                    var blockedResponse = new { status = "success", result = guardDecision.ToErrorResponse() };
+                    pending.TrySetResult(JsonConvert.SerializeObject(blockedResponse));
+                    RemovePending(id, pending);
+                    return;
+                }
+
+                if (guardDecision.WarnOnly)
+                {
+                    SharedEditorCommandGuard.LogDecision(guardDecision, parameters, logType, sw?.ElapsedMilliseconds ?? 0);
+                }
+
                 var result = CommandRegistry.ExecuteCommand(command.type, parameters, pending.CompletionSource);
 
                 if (result == null)

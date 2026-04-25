@@ -121,6 +121,27 @@ namespace MCPForUnity.Editor.Tools
                     continue;
                 }
 
+                var guardDecision = SharedEditorCommandGuard.Evaluate(toolName, commandParams);
+                if (!guardDecision.Allowed)
+                {
+                    invocationFailureCount++;
+                    anyCommandFailed = true;
+                    SharedEditorCommandGuard.LogDecision(guardDecision, commandParams, "tool");
+                    commandResults.Add(new
+                    {
+                        tool = toolName,
+                        callSucceeded = false,
+                        result = guardDecision.ToErrorResponse()
+                    });
+                    if (failFast) break;
+                    continue;
+                }
+
+                if (guardDecision.WarnOnly)
+                {
+                    SharedEditorCommandGuard.LogDecision(guardDecision, commandParams, "tool");
+                }
+
                 try
                 {
                     var result = await CommandRegistry.InvokeCommandAsync(toolName, commandParams).ConfigureAwait(true);
