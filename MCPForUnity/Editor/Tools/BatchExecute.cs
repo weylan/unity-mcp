@@ -65,6 +65,49 @@ namespace MCPForUnity.Editor.Tools
             int invocationFailureCount = 0;
             bool anyCommandFailed = false;
 
+            string batchAutoToken = null;
+            bool batchNeedsLock = false;
+            foreach (var cmdToken in commandsToken)
+            {
+                if (cmdToken is JObject cmdObj)
+                {
+                    string tool = cmdObj["tool"]?.ToString();
+                    var cmdParams = NormalizeParameterKeys(cmdObj["params"] as JObject ?? new JObject());
+                    string act = cmdParams?.Value<string>("action");
+                    if (SharedEditorOperationLock.IsHighRiskTool(tool, act))
+                    {
+                        batchNeedsLock = true;
+                        break;
+                    }
+                }
+            }
+
+            if (batchNeedsLock)
+            {
+                string clientToken = @params.Value<string>("editor_lock_token")
+                                  ?? @params.Value<string>("editorLockToken");
+                if (!string.IsNullOrEmpty(clientToken))
+                {
+                    if (!SharedEditorOperationLock.ValidateToken(clientToken))
+                    {
+                        return SharedEditorOperationLock.BuildTokenInvalidResponse(clientToken, "batch_execute");
+                    }
+                }
+                else
+                {
+                    int batchTtl = Math.Min(commandsToken.Count * 15, 300);
+                    var lockResult = SharedEditorOperationLock.TryAcquire(
+                        "auto", "batch_execute", isExplicit: false, ttlSeconds: batchTtl);
+                    if (!lockResult.Acquired)
+                    {
+                        return SharedEditorOperationLock.BuildBusyResponse(lockResult.BusyHolder, "batch_execute");
+                    }
+                    batchAutoToken = lockResult.Token;
+                }
+            }
+
+            try
+            {
             foreach (var token in commandsToken)
             {
                 if (token is not JObject commandObj)
@@ -184,6 +227,11 @@ namespace MCPForUnity.Editor.Tools
                         break;
                     }
                 }
+            }
+            }
+            finally
+            {
+                SharedEditorOperationLock.ReleaseIfAutoLock(batchAutoToken);
             }
 
             bool overallSuccess = !anyCommandFailed;

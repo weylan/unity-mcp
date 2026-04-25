@@ -379,6 +379,41 @@ namespace MCPForUnity.Editor.Services.Transport
                     SharedEditorCommandGuard.LogDecision(guardDecision, parameters, logType, sw?.ElapsedMilliseconds ?? 0);
                 }
 
+                string autoLockToken = null;
+                string lockAction = parameters?.Value<string>("action");
+                if (SharedEditorOperationLock.IsHighRiskTool(command.type, lockAction))
+                {
+                    string clientToken = parameters?.Value<string>("editor_lock_token")
+                                      ?? parameters?.Value<string>("editorLockToken");
+
+                    if (!string.IsNullOrEmpty(clientToken))
+                    {
+                        if (!SharedEditorOperationLock.ValidateToken(clientToken))
+                        {
+                            var tokenErrResp = SharedEditorOperationLock.BuildTokenInvalidResponse(clientToken, command.type);
+                            var tokenErrResponse = new { status = "success", result = tokenErrResp };
+                            pending.TrySetResult(JsonConvert.SerializeObject(tokenErrResponse));
+                            RemovePending(id, pending);
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        var lockResult = SharedEditorOperationLock.TryAcquire(
+                            "auto", $"{command.type}:{lockAction}", isExplicit: false);
+
+                        if (!lockResult.Acquired)
+                        {
+                            var busyResp = SharedEditorOperationLock.BuildBusyResponse(lockResult.BusyHolder, command.type);
+                            var busyResponse = new { status = "success", result = busyResp };
+                            pending.TrySetResult(JsonConvert.SerializeObject(busyResponse));
+                            RemovePending(id, pending);
+                            return;
+                        }
+                        autoLockToken = lockResult.Token;
+                    }
+                }
+
                 var result = CommandRegistry.ExecuteCommand(command.type, parameters, pending.CompletionSource);
 
                 if (result == null)
@@ -387,8 +422,10 @@ namespace MCPForUnity.Editor.Services.Transport
                     var capturedType = command.type;
                     var capturedParams = parameters;
                     var capturedLogType = logType;
+                    var capturedAutoLockToken = autoLockToken;
                     pending.CompletionSource.Task.ContinueWith(t =>
                     {
+                        SharedEditorOperationLock.ReleaseIfAutoLock(capturedAutoLockToken);
                         sw?.Stop();
                         var logStatus = "SUCCESS";
                         string logError = null;
@@ -417,6 +454,7 @@ namespace MCPForUnity.Editor.Services.Transport
                     return;
                 }
 
+                SharedEditorOperationLock.ReleaseIfAutoLock(autoLockToken);
                 sw?.Stop();
 
                 string syncLogStatus = "SUCCESS";

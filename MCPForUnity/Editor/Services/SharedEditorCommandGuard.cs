@@ -153,6 +153,8 @@ namespace MCPForUnity.Editor.Services
                     return GetManagePackagesRisk(action);
                 case "manage_graphics":
                     return GetManageGraphicsRisk(action);
+                case "manage_editor_lock":
+                    return null;
                 default:
                     return null;
             }
