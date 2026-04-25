@@ -226,6 +226,12 @@ namespace MCPForUnity.Editor.Helpers
                 return resolved;
             }
 
+            string packageSource = GetPackageJson()?.Value<string>("mcpServerPackageSource");
+            if (!string.IsNullOrWhiteSpace(packageSource))
+            {
+                return ResolveLocalServerPath(packageSource.Trim());
+            }
+
             // Default to PyPI package (avoids Windows long path issues with git clone)
             string version = GetPackageVersion();
             if (version == "unknown")
