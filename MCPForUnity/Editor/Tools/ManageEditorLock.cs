@@ -50,8 +50,8 @@ namespace MCPForUnity.Editor.Tools
             }
 
             string reason = p.Get("reason") ?? "";
-            int ttl = p.GetInt("ttl_seconds", 0);
-            if (ttl <= 0) ttl = p.GetInt("ttlSeconds", 0);
+            int ttl = p.GetInt("ttl_seconds") ?? 0;
+            if (ttl <= 0) ttl = 0;
 
             var result = SharedEditorOperationLock.TryAcquire(holderHint, reason, isExplicit: true, ttlSeconds: ttl);
 
@@ -94,8 +94,8 @@ namespace MCPForUnity.Editor.Tools
                 return new ErrorResponse("'token' is required for extend.");
             }
 
-            int additionalSeconds = p.GetInt("additional_seconds", 60);
-            if (additionalSeconds <= 0) additionalSeconds = p.GetInt("additionalSeconds", 60);
+            int additionalSeconds = p.GetInt("additional_seconds") ?? 60;
+            if (additionalSeconds <= 0) additionalSeconds = 60;
 
             bool extended = SharedEditorOperationLock.Extend(token, additionalSeconds);
             if (extended)
