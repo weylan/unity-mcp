@@ -1,6 +1,6 @@
 ---
 name: unity-mcp-orchestrator
-description: Orchestrate Unity Editor via MCP (Model Context Protocol) tools and resources. Use when working with Unity projects through MCP for Unity - creating/modifying GameObjects, editing scripts, managing scenes, running tests, or any Unity Editor automation. Provides best practices, tool schemas, and workflow patterns for effective Unity-MCP integration.
+description: Orchestrate Unity Editor via MCP (Model Context Protocol) tools and resources. Use when working with Unity projects through MCP for Unity - creating/modifying GameObjects, editing scripts, managing scenes, running tests, Play Mode UGUI inspection/clicking, or any Unity Editor automation. Provides best practices, tool schemas, and workflow patterns for effective Unity-MCP integration.
 ---
 
 # Unity-MCP Operator Guide
@@ -139,6 +139,31 @@ read_console(
 # - blocking_reasons: Why tools might fail
 ```
 
+### 6. Click and Inspect UGUI in Play Mode
+
+Runtime UGUI interaction requires Play Mode and usually requires `execute_code`; MCP component tools can inspect or set simple properties, but cannot invoke `Button.onClick`.
+
+Before interacting with UI:
+- Read `mcpforunity://editor/state`; proceed when `is_playing=true` and `is_compiling=false`.
+- In Play Mode, do not wait for `is_changing=false`, `activity.phase` to leave `playmode_transition`, or `advice.ready_for_tools=true`; those can remain unstable while the game loop is running.
+- If the target project provides a UI helper such as `UGUITestHelper`, prefer that over one-off inline code.
+
+Common project-helper calls:
+```python
+execute_code(action="execute", code='return UGUITestHelper.ListAll();')
+execute_code(action="execute", code='return UGUITestHelper.ClickButton("StartButton");')
+execute_code(action="execute", code='return UGUITestHelper.GetState("MusicToggle");')
+execute_code(action="execute", code='return UGUITestHelper.SetToggle("MusicToggle", false);')
+execute_code(action="execute", code='return UGUITestHelper.SetSlider("VolumeSlider", 0.8f);')
+execute_code(action="execute", code='return UGUITestHelper.SetInputField("UsernameInput", "testuser");')
+execute_code(action="execute", code='return UGUITestHelper.RunSequence(new string[] {"Continue", "Confirm"}, new float[] {0f, 1.5f});')
+```
+
+Fallbacks when `execute_code` or a helper is unavailable:
+- Read-only discovery: `find_gameobjects(search_method="by_component", search_term="Button")`, then inspect `mcpforunity://scene/gameobject/{id}/component/Button`.
+- State mutation: `manage_components(action="set_property", target=<id>, component_type="Toggle", property="isOn", value=true)` or the same pattern for `Slider.value`.
+- Verify UI state with `manage_camera(action="screenshot", capture_source="game_view", include_image=true)`. If Game View is blank because UI renders to a RenderTexture, capture a specific UI camera or use `capture_source="scene_view"` with `view_target="Canvas"`.
+
 ## Parameter Type Conventions
 
 These are common patterns, not strict guarantees. `manage_components.set_property` payload shapes can vary by component/property; if a template fails, inspect the component resource payload and adjust.
@@ -190,7 +215,7 @@ uri="file:///full/path/to/file.cs"
 | **Packages** | `manage_packages` | Install, remove, search, and manage Unity packages and scoped registries. Query actions: list installed, search registry, get info, ping, poll status. Mutating actions: add/remove packages, embed for editing, add/remove scoped registries, force resolve. Validates identifiers, warns on git URLs, checks dependents before removal (`force=true` to override). See [tools-reference.md](references/tools-reference.md#package-tools). |
 | **Physics** | `manage_physics` | Manage 3D and 2D physics (21 actions). Settings, collision matrix, materials, joints (14 types). Queries: `raycast`, `raycast_all`, `linecast`, `shapecast` (sphere/box/capsule sweep), `overlap`. Forces: `apply_force` (AddForce/AddTorque/AddExplosionForce with ForceMode). Rigidbody: `get_rigidbody`, `configure_rigidbody` (mass, drag, gravity, constraints, collision detection). Validation: scene-wide checks. Simulation: `simulate_step` in edit mode. See [tools-reference.md](references/tools-reference.md#physics-tools). |
 | **ProBuilder** | `manage_probuilder` | 3D modeling, mesh editing, complex geometry. **When `com.unity.probuilder` is installed, prefer ProBuilder shapes over primitive GameObjects** for editable geometry, multi-material faces, or complex shapes. Supports 12 shape types, face/edge/vertex editing, smoothing, and per-face materials. See [ProBuilder Guide](references/probuilder-guide.md). |
-| **UI** | `manage_ui`, `batch_execute` with `manage_gameobject` + `manage_components` | **UI Toolkit**: Use `manage_ui` to create UXML/USS files, attach UIDocument, inspect visual trees. **uGUI (Canvas)**: Use `batch_execute` for Canvas, Panel, Button, Text, Slider, Toggle, Input Field. **Read `mcpforunity://project/info` first** to detect uGUI/TMP/Input System/UI Toolkit availability. (see [UI workflows](references/workflows.md#ui-creation-workflows)) |
+| **UI** | `manage_ui`, `batch_execute` with `manage_gameobject` + `manage_components`, `execute_code` | **UI Toolkit**: Use `manage_ui` to create UXML/USS files, attach UIDocument, inspect visual trees. **uGUI (Canvas)**: Use `batch_execute` for Canvas, Panel, Button, Text, Slider, Toggle, Input Field. **Runtime clicks/tests**: in Play Mode use `execute_code` or a project helper such as `UGUITestHelper`; component tools alone cannot invoke `Button.onClick`. **Read `mcpforunity://project/info` first** to detect uGUI/TMP/Input System/UI Toolkit availability. (see [UI workflows](references/workflows.md#ui-creation-workflows)) |
 | **Docs** | `unity_reflect`, `unity_docs` | API verification and documentation lookup. **`unity_reflect`** inspects live C# APIs via reflection (requires Unity connection): `search` types across assemblies, `get_type` for member summary, `get_member` for full signatures. **`unity_docs`** fetches official docs from docs.unity3d.com (no Unity connection needed): `get_doc` (ScriptReference), `get_manual` (Manual pages), `get_package_doc` (package docs), `lookup` (parallel search all sources + project assets). **Trust hierarchy: reflection > project assets > docs.** Workflow: `unity_reflect` search -> get_type -> get_member -> `unity_docs` lookup. See [tools-reference.md](references/tools-reference.md#docs-tools). |
 
 ## Common Workflows
