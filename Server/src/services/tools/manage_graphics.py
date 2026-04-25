@@ -125,6 +125,7 @@ async def manage_graphics(
     fog_end: Annotated[Optional[float], "Fog end distance (Linear mode)."] = None,
     bounces: Annotated[Optional[int], "Reflection bounces."] = None,
     reflection_mode: Annotated[Optional[str], "Default reflection mode: Skybox, Custom."] = None,
+    editor_lock_token: Annotated[Optional[str], "Token returned by manage_editor_lock acquire for multi-operation editor locks."] = None,
 ) -> dict[str, Any]:
     action_lower = action.lower()
     if action_lower not in ALL_ACTIONS:
@@ -155,6 +156,7 @@ async def manage_graphics(
         "fog_density": fog_density, "fog_start": fog_start,
         "fog_end": fog_end, "bounces": bounces,
         "reflection_mode": reflection_mode,
+        "editor_lock_token": editor_lock_token,
     }
     for key, val in param_map.items():
         if val is not None:

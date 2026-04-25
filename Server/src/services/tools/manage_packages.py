@@ -63,6 +63,7 @@ async def manage_packages(
     name: Annotated[Optional[str], "Registry name for add_registry/remove_registry."] = None,
     url: Annotated[Optional[str], "Registry URL for add_registry."] = None,
     scopes: Annotated[Optional[list[str]], "Registry scopes for add_registry."] = None,
+    editor_lock_token: Annotated[Optional[str], "Token returned by manage_editor_lock acquire for multi-operation editor locks."] = None,
 ) -> dict[str, Any]:
     action_lower = action.lower()
     if action_lower not in ALL_ACTIONS:
@@ -80,6 +81,7 @@ async def manage_packages(
         "name": name,
         "url": url,
         "scopes": scopes,
+        "editor_lock_token": editor_lock_token,
     }
     for key, val in param_map.items():
         if val is not None:

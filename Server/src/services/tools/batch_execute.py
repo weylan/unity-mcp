@@ -83,6 +83,8 @@ async def batch_execute(
                          "Stop processing after the first failure"] = None,
     max_parallelism: Annotated[int | None,
                                "Hint for the maximum number of parallel workers"] = None,
+    editor_lock_token: Annotated[str | None,
+                                 "Token returned by manage_editor_lock acquire for the whole batch"] = None,
 ) -> dict[str, Any]:
     """Proxy the batch_execute tool to the Unity Editor transporter."""
     unity_instance = await get_unity_instance_from_context(ctx)
@@ -138,6 +140,8 @@ async def batch_execute(
         payload["failFast"] = bool(fail_fast)
     if max_parallelism is not None:
         payload["maxParallelism"] = int(max_parallelism)
+    if editor_lock_token is not None:
+        payload["editor_lock_token"] = editor_lock_token
 
     return await send_with_unity_instance(
         async_send_command_with_retry,

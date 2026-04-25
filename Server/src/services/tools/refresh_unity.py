@@ -181,6 +181,8 @@ async def refresh_unity(
                        "Whether to request compilation"] = "none",
     wait_for_ready: Annotated[bool,
                               "If true, wait until editor_state.advice.ready_for_tools is true"] = True,
+    editor_lock_token: Annotated[str | None,
+                                 "Token returned by manage_editor_lock acquire for multi-operation editor locks"] = None,
 ) -> MCPResponse | dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -189,7 +191,9 @@ async def refresh_unity(
         "scope": scope,
         "compile": compile,
         "wait_for_ready": bool(wait_for_ready),
+        "editor_lock_token": editor_lock_token,
     }
+    params = {k: v for k, v in params.items() if v is not None}
 
     recovered_from_disconnect = False
     # Don't retry on reload - refresh_unity triggers compilation/reload,

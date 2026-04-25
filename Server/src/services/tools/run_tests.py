@@ -167,6 +167,8 @@ async def run_tests(
                                     "Include details for failed/skipped tests only (default: false)"] = False,
     include_details: Annotated[bool,
                                "Include details for all tests (default: false)"] = False,
+    editor_lock_token: Annotated[str | None,
+                                 "Token returned by manage_editor_lock acquire for multi-operation editor locks"] = None,
 ) -> RunTestsStartResponse | MCPResponse:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -197,6 +199,8 @@ async def run_tests(
         params["includeFailedTests"] = True
     if include_details:
         params["includeDetails"] = True
+    if editor_lock_token is not None:
+        params["editor_lock_token"] = editor_lock_token
 
     response = await unity_transport.send_with_unity_instance(
         async_send_command_with_retry,

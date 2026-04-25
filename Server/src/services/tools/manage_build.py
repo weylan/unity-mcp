@@ -65,6 +65,7 @@ async def manage_build(
     profiles: Annotated[Optional[str], "JSON array of profile paths for batch build (Unity 6+)"] = None,
     output_dir: Annotated[Optional[str], "Base output directory for batch builds"] = None,
     job_id: Annotated[Optional[str], "Job ID for status/cancel"] = None,
+    editor_lock_token: Annotated[Optional[str], "Token returned by manage_editor_lock acquire for multi-operation editor locks"] = None,
 ) -> dict[str, Any]:
     action_lower = action.lower()
     if action_lower not in ALL_ACTIONS:
@@ -101,6 +102,7 @@ async def manage_build(
         "profiles": parsed_profiles,
         "output_dir": output_dir,
         "job_id": job_id,
+        "editor_lock_token": editor_lock_token,
     }
 
     for key, val in param_map.items():

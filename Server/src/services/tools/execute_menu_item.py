@@ -24,9 +24,14 @@ async def execute_menu_item(
     ctx: Context,
     menu_path: Annotated[str,
                          "Menu path for 'execute' or 'exists' (e.g., 'File/Save Project')"] | None = None,
+    editor_lock_token: Annotated[str,
+                                 "Token returned by manage_editor_lock acquire for multi-operation editor locks"] | None = None,
 ) -> MCPResponse:
     unity_instance = await get_unity_instance_from_context(ctx)
-    params_dict: dict[str, Any] = {"menuPath": menu_path}
+    params_dict: dict[str, Any] = {
+        "menuPath": menu_path,
+        "editor_lock_token": editor_lock_token,
+    }
     params_dict = {k: v for k, v in params_dict.items() if v is not None}
     result = await send_with_unity_instance(async_send_command_with_retry, unity_instance, "execute_menu_item", params_dict)
     return MCPResponse(**result) if isinstance(result, dict) else result

@@ -24,6 +24,8 @@ async def manage_editor(
                         "Tag name when adding and removing tags"] | None = None,
     layer_name: Annotated[str,
                           "Layer name when adding and removing layers"] | None = None,
+    editor_lock_token: Annotated[str,
+                                 "Token returned by manage_editor_lock acquire for multi-operation editor locks"] | None = None,
 ) -> dict[str, Any]:
     # Get active instance from request state (injected by middleware)
     unity_instance = await get_unity_instance_from_context(ctx)
@@ -43,6 +45,7 @@ async def manage_editor(
             "toolName": tool_name,
             "tagName": tag_name,
             "layerName": layer_name,
+            "editor_lock_token": editor_lock_token,
         }
         params = {k: v for k, v in params.items() if v is not None}
 
