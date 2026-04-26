@@ -67,6 +67,7 @@ namespace MCPForUnity.Editor.Tools
 
             string batchAutoToken = null;
             bool batchNeedsLock = false;
+            bool hasExplicitLockToken = false;
             foreach (var cmdToken in commandsToken)
             {
                 if (cmdToken is JObject cmdObj)
@@ -84,18 +85,22 @@ namespace MCPForUnity.Editor.Tools
 
             if (batchNeedsLock)
             {
+                int batchTtl = Math.Min(commandsToken.Count * 15, 300);
                 string clientToken = @params.Value<string>("editor_lock_token")
                                   ?? @params.Value<string>("editorLockToken");
                 if (!string.IsNullOrEmpty(clientToken))
                 {
-                    if (!SharedEditorOperationLock.ValidateToken(clientToken))
+                    hasExplicitLockToken = SharedEditorOperationLock.Reenter(
+                        clientToken,
+                        "batch_execute",
+                        batchTtl);
+                    if (!hasExplicitLockToken)
                     {
                         return SharedEditorOperationLock.BuildTokenInvalidResponse(clientToken, "batch_execute");
                     }
                 }
                 else
                 {
-                    int batchTtl = Math.Min(commandsToken.Count * 15, 300);
                     var lockResult = SharedEditorOperationLock.TryAcquire(
                         "auto", "batch_execute", isExplicit: false, ttlSeconds: batchTtl);
                     if (!lockResult.Acquired)
@@ -164,7 +169,7 @@ namespace MCPForUnity.Editor.Tools
                     continue;
                 }
 
-                var guardDecision = SharedEditorCommandGuard.Evaluate(toolName, commandParams);
+                var guardDecision = SharedEditorCommandGuard.Evaluate(toolName, commandParams, hasExplicitLockToken);
                 if (!guardDecision.Allowed)
                 {
                     invocationFailureCount++;

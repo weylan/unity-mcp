@@ -364,7 +364,29 @@ namespace MCPForUnity.Editor.Services.Transport
                 var logType = resourceMeta != null ? "resource" : toolMeta != null ? "tool" : "unknown";
                 var sw = McpLogRecord.IsEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
 
-                var guardDecision = SharedEditorCommandGuard.Evaluate(command.type, parameters);
+                string autoLockToken = null;
+                string lockAction = parameters?.Value<string>("action");
+                bool isHighRiskTool = SharedEditorOperationLock.IsHighRiskTool(command.type, lockAction);
+                string clientToken = parameters?.Value<string>("editor_lock_token")
+                                  ?? parameters?.Value<string>("editorLockToken");
+                bool hasValidEditorLockToken = false;
+
+                if (isHighRiskTool && !string.IsNullOrEmpty(clientToken))
+                {
+                    hasValidEditorLockToken = SharedEditorOperationLock.Reenter(
+                        clientToken,
+                        $"{command.type}:{lockAction}");
+                    if (!hasValidEditorLockToken)
+                    {
+                        var tokenErrResp = SharedEditorOperationLock.BuildTokenInvalidResponse(clientToken, command.type);
+                        var tokenErrResponse = new { status = "success", result = tokenErrResp };
+                        pending.TrySetResult(JsonConvert.SerializeObject(tokenErrResponse));
+                        RemovePending(id, pending);
+                        return;
+                    }
+                }
+
+                var guardDecision = SharedEditorCommandGuard.Evaluate(command.type, parameters, hasValidEditorLockToken);
                 if (!guardDecision.Allowed)
                 {
                     SharedEditorCommandGuard.LogDecision(guardDecision, parameters, logType, sw?.ElapsedMilliseconds ?? 0);
@@ -379,25 +401,9 @@ namespace MCPForUnity.Editor.Services.Transport
                     SharedEditorCommandGuard.LogDecision(guardDecision, parameters, logType, sw?.ElapsedMilliseconds ?? 0);
                 }
 
-                string autoLockToken = null;
-                string lockAction = parameters?.Value<string>("action");
-                if (SharedEditorOperationLock.IsHighRiskTool(command.type, lockAction))
+                if (isHighRiskTool)
                 {
-                    string clientToken = parameters?.Value<string>("editor_lock_token")
-                                      ?? parameters?.Value<string>("editorLockToken");
-
-                    if (!string.IsNullOrEmpty(clientToken))
-                    {
-                        if (!SharedEditorOperationLock.ValidateToken(clientToken))
-                        {
-                            var tokenErrResp = SharedEditorOperationLock.BuildTokenInvalidResponse(clientToken, command.type);
-                            var tokenErrResponse = new { status = "success", result = tokenErrResp };
-                            pending.TrySetResult(JsonConvert.SerializeObject(tokenErrResponse));
-                            RemovePending(id, pending);
-                            return;
-                        }
-                    }
-                    else
+                    if (!hasValidEditorLockToken)
                     {
                         var lockResult = SharedEditorOperationLock.TryAcquire(
                             "auto", $"{command.type}:{lockAction}", isExplicit: false);

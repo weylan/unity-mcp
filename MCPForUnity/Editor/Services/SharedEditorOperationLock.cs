@@ -160,6 +160,24 @@ namespace MCPForUnity.Editor.Services
             }
         }
 
+        internal static bool Reenter(string token, string reason, int ttlSeconds = 0)
+        {
+            if (!IsEnabled) return true;
+            if (string.IsNullOrEmpty(token)) return false;
+
+            lock (SyncRoot)
+            {
+                EvictIfExpired();
+                if (_current == null || _current.Token != token) return false;
+
+                int ttl = ClampTtl(ttlSeconds, _current.IsExplicit);
+                _current.ExpiresAtUtc = DateTime.UtcNow.AddSeconds(ttl);
+                if (!string.IsNullOrEmpty(reason)) _current.Reason = reason;
+                LogAcquired(_current, reentrant: true);
+                return true;
+            }
+        }
+
         internal static bool ReleaseIfAutoLock(string token)
         {
             if (string.IsNullOrEmpty(token)) return false;
