@@ -57,7 +57,7 @@ namespace MCPForUnity.Editor.Services
             }
         }
 
-        public static Decision Evaluate(string toolName, JObject parameters)
+        public static Decision Evaluate(string toolName, JObject parameters, bool hasValidEditorLockToken = false)
         {
             string normalizedTool = (toolName ?? string.Empty).Trim();
             if (string.IsNullOrEmpty(normalizedTool))
@@ -77,6 +77,14 @@ namespace MCPForUnity.Editor.Services
             if (string.Equals(mode, "off", StringComparison.OrdinalIgnoreCase))
             {
                 return Decision.Allow(normalizedTool, action);
+            }
+
+            if (hasValidEditorLockToken)
+            {
+                return Decision.Warn(
+                    normalizedTool,
+                    action,
+                    $"explicit editor_lock_token accepted for guarded command: {reason}");
             }
 
             if (string.Equals(mode, "warn", StringComparison.OrdinalIgnoreCase))

@@ -2,6 +2,8 @@
 "use strict";
 
 const { spawnSync } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 
 const DEFAULTS = {
   upstreamRemote: "upstream",
@@ -12,6 +14,8 @@ const DEFAULTS = {
   tagPrefix: "gameempire-mcp-v",
   latestTag: "gameempire-mcp-latest",
   timezone: "Asia/Shanghai",
+  serverPackageSourcePrefix: "git+https://github.com/weylan/unity-mcp.git@",
+  serverPackageSourceSuffix: "#subdirectory=Server",
 };
 
 function parseArgs(argv) {
@@ -200,6 +204,50 @@ function immutableTagsPointingAtHead(opts) {
     .map((entry) => entry.tag);
 }
 
+function serverPackageSourceForTag(tag, opts = DEFAULTS) {
+  return `${opts.serverPackageSourcePrefix}${tag}${opts.serverPackageSourceSuffix}`;
+}
+
+function packageJsonPath(opts) {
+  return path.join(opts.cwd, "MCPForUnity", "package.json");
+}
+
+function readPackageJson(opts) {
+  return JSON.parse(fs.readFileSync(packageJsonPath(opts), "utf8"));
+}
+
+function readServerPackageSource(opts) {
+  return readPackageJson(opts).mcpServerPackageSource || "";
+}
+
+function updateServerPackageSource(opts, immutableTag) {
+  const expected = serverPackageSourceForTag(immutableTag, opts);
+  const packagePath = packageJsonPath(opts);
+  const packageJson = readPackageJson(opts);
+  if (packageJson.mcpServerPackageSource === expected) {
+    return false;
+  }
+
+  if (opts.dryRun) {
+    console.log(`DRY-RUN update ${path.relative(opts.cwd, packagePath)} mcpServerPackageSource -> ${expected}`);
+    return true;
+  }
+
+  packageJson.mcpServerPackageSource = expected;
+  fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
+  return true;
+}
+
+function commitServerPackageSource(opts, immutableTag) {
+  if (!updateServerPackageSource(opts, immutableTag)) {
+    return false;
+  }
+
+  runGit(["add", "MCPForUnity/package.json"], opts);
+  runGit(["commit", "-m", `chore: point MCP server package to ${immutableTag}`], opts);
+  return true;
+}
+
 function mergeLatest(opts) {
   if (!opts.dryRun) {
     ensureClean(opts);
@@ -215,9 +263,17 @@ function mergeLatest(opts) {
   runGit(["merge", "--no-edit", `${opts.upstreamRemote}/${opts.upstreamBranch}`], opts);
 
   const existingHeadTags = immutableTagsPointingAtHead(opts);
-  const immutableTag = existingHeadTags.length ? existingHeadTags[existingHeadTags.length - 1] : nextTagName(opts);
+  const taggedHead = existingHeadTags.length ? existingHeadTags[existingHeadTags.length - 1] : "";
+  const immutableTag =
+    taggedHead && readServerPackageSource(opts) === serverPackageSourceForTag(taggedHead, opts)
+      ? taggedHead
+      : nextTagName(opts);
 
-  if (!existingHeadTags.includes(immutableTag)) {
+  if (!taggedHead || immutableTag !== taggedHead) {
+    commitServerPackageSource(opts, immutableTag);
+  }
+
+  if (!immutableTagsPointingAtHead(opts).includes(immutableTag)) {
     runGit(["tag", immutableTag, "HEAD"], opts);
   } else {
     console.log(`HEAD already has immutable tag ${immutableTag}`);
@@ -267,6 +323,9 @@ module.exports = {
   compareParsedTags,
   todayStamp,
   nextTagName,
+  serverPackageSourceForTag,
+  readServerPackageSource,
+  updateServerPackageSource,
   mergeLatest,
   main,
 };

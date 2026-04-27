@@ -105,6 +105,52 @@ namespace MCPForUnityTests.Editor.Services
         }
 
         [Test]
+        public void ValidEditorLockToken_AllowsGuardedCommandAsWarnOnly()
+        {
+            var decision = SharedEditorCommandGuard.Evaluate("refresh_unity", new JObject
+            {
+                ["mode"] = "if_dirty",
+                ["scope"] = "scripts",
+                ["compile"] = "request",
+                ["wait_for_ready"] = false
+            }, hasValidEditorLockToken: true);
+
+            Assert.IsTrue(decision.Allowed);
+            Assert.IsTrue(decision.WarnOnly);
+            StringAssert.Contains("explicit editor_lock_token accepted", decision.Reason);
+            StringAssert.Contains("compile=request", decision.Reason);
+        }
+
+        [Test]
+        public void EditorLockToken_ReenterRefreshesExpiry()
+        {
+            var acquire = SharedEditorOperationLock.TryAcquire(
+                "guard-test",
+                "initial",
+                isExplicit: true,
+                ttlSeconds: 1);
+            Assert.IsTrue(acquire.Acquired);
+
+            try
+            {
+                var before = SharedEditorOperationLock.GetState();
+                Assert.IsTrue(SharedEditorOperationLock.Reenter(
+                    acquire.Token,
+                    "refresh_unity:",
+                    ttlSeconds: 120));
+                var after = SharedEditorOperationLock.GetState();
+
+                Assert.Greater(after.ExpiresAtUtc, before.ExpiresAtUtc);
+                Assert.AreEqual("refresh_unity:", after.Reason);
+                Assert.IsTrue(after.IsExplicit);
+            }
+            finally
+            {
+                SharedEditorOperationLock.Release(acquire.Token);
+            }
+        }
+
+        [Test]
         public void RiskyEditorBuildPackageAndGraphicsActions_AreBlocked()
         {
             AssertBlocked("execute_menu_item", new JObject
