@@ -25,6 +25,7 @@ function parseArgs(argv) {
     fetch: true,
     push: true,
     dryRun: false,
+    mode: "merge",
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -41,6 +42,8 @@ function parseArgs(argv) {
     else if (arg === "--no-fetch") opts.fetch = false;
     else if (arg === "--push") opts.push = true;
     else if (arg === "--no-push") opts.push = false;
+    else if (arg === "--merge") opts.mode = "merge";
+    else if (arg === "--release-only" || arg === "--no-merge") opts.mode = "release";
     else if (arg === "--dry-run") opts.dryRun = true;
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
@@ -53,9 +56,10 @@ function usage() {
   return [
     "Usage: node tools/gameempire_merge_latest.js [options]",
     "",
-    "Fetches upstream, merges upstream beta into gameempire/protect,",
+    "By default, fetches upstream, merges upstream beta into gameempire/protect,",
     "creates a new immutable gameempire-mcp-vYYYYMMDD.N tag if needed,",
     "and moves gameempire-mcp-latest to that commit.",
+    "With --release-only, skips the upstream merge and releases the target branch.",
     "",
     "Options:",
     "  --upstream-url <url>       Default: https://github.com/CoplayDev/unity-mcp.git",
@@ -66,8 +70,10 @@ function usage() {
     "  --tag-prefix <prefix>      Default: gameempire-mcp-v",
     "  --latest-tag <name>        Default: gameempire-mcp-latest",
     "  --no-fetch                 Skip git fetch",
+    "  --merge                    Merge upstream before release (default)",
     "  --push                     Push branch, immutable tag, and latest tag (default)",
-    "  --no-push                  Do not push after the local merge/tag update",
+    "  --no-push                  Do not push after the local branch/tag update",
+    "  --release-only             Release the target branch without merging upstream",
     "  --dry-run                  Print git commands without changing the repo",
   ].join("\n");
 }
@@ -108,7 +114,7 @@ function remoteExists(name, opts) {
 function ensureClean(opts) {
   const status = gitOutput(["status", "--porcelain"], opts);
   if (status) {
-    throw new Error("Refusing to merge with a dirty worktree. Commit/stash changes first.");
+    throw new Error("Refusing to continue with a dirty worktree. Commit/stash changes first.");
   }
 }
 
@@ -250,20 +256,7 @@ function commitServerPackageSource(opts, immutableTag) {
   return true;
 }
 
-function mergeLatest(opts) {
-  if (!opts.dryRun) {
-    ensureClean(opts);
-  }
-  ensureRemote(opts);
-
-  if (opts.fetch) {
-    runGit(["fetch", opts.upstreamRemote, "--tags"], opts);
-    runGit(["fetch", opts.originRemote, "--tags"], opts);
-  }
-
-  checkoutTargetBranch(opts);
-  runGit(["merge", "--no-edit", `${opts.upstreamRemote}/${opts.upstreamBranch}`], opts);
-
+function finalizeRelease(opts, action) {
   const existingHeadTags = immutableTagsPointingAtHead(opts);
   const taggedHead = existingHeadTags.length ? existingHeadTags[existingHeadTags.length - 1] : "";
   const immutableTag =
@@ -284,7 +277,7 @@ function mergeLatest(opts) {
   runGit(["tag", "-f", opts.latestTag, "HEAD"], opts);
 
   const head = opts.dryRun ? "<dry-run>" : gitOutput(["rev-parse", "HEAD"], opts);
-  console.log(`Unity MCP merge complete: ${immutableTag} -> ${head}`);
+  console.log(`Unity MCP ${action} complete: ${immutableTag} -> ${head}`);
   console.log(`Latest pointer updated: ${opts.latestTag} -> ${immutableTag}`);
 
   if (opts.push) {
@@ -298,6 +291,36 @@ function mergeLatest(opts) {
   return { immutableTag, latestTag: opts.latestTag, head };
 }
 
+function mergeLatest(opts) {
+  if (!opts.dryRun) {
+    ensureClean(opts);
+  }
+  ensureRemote(opts);
+
+  if (opts.fetch) {
+    runGit(["fetch", opts.upstreamRemote, "--tags"], opts);
+    runGit(["fetch", opts.originRemote, "--tags"], opts);
+  }
+
+  checkoutTargetBranch(opts);
+  runGit(["merge", "--no-edit", `${opts.upstreamRemote}/${opts.upstreamBranch}`], opts);
+
+  return finalizeRelease(opts, "merge");
+}
+
+function releaseCurrent(opts) {
+  if (!opts.dryRun) {
+    ensureClean(opts);
+  }
+
+  if (opts.fetch) {
+    runGit(["fetch", opts.originRemote, "--tags"], opts);
+  }
+
+  checkoutTargetBranch(opts);
+  return finalizeRelease(opts, "release");
+}
+
 function main(argv = process.argv.slice(2)) {
   const opts = parseArgs(argv);
   if (opts.help) {
@@ -305,7 +328,11 @@ function main(argv = process.argv.slice(2)) {
     return 0;
   }
 
-  mergeLatest(opts);
+  if (opts.mode === "release") {
+    releaseCurrent(opts);
+  } else {
+    mergeLatest(opts);
+  }
   return 0;
 }
 
@@ -328,6 +355,7 @@ module.exports = {
   serverPackageSourceForTag,
   readServerPackageSource,
   updateServerPackageSource,
+  releaseCurrent,
   mergeLatest,
   main,
 };
