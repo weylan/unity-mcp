@@ -8,6 +8,7 @@ const path = require("path");
 
 const {
   DEFAULTS,
+  parseArgs,
   serverPackageSourceForTag,
   readServerPackageSource,
   updateServerPackageSource,
@@ -46,5 +47,10 @@ withTempRepo((cwd) => {
 
   assert.strictEqual(updateServerPackageSource(opts, tag), false);
 });
+
+assert.strictEqual(parseArgs([]).push, true);
+assert.strictEqual(parseArgs(["--no-push"]).push, false);
+assert.strictEqual(parseArgs(["--no-push", "--push"]).push, true);
+assert.strictEqual(parseArgs(["--push", "--no-push"]).push, false);
 
 console.log("ok - gameempire merge updates mcpServerPackageSource to immutable tag");

@@ -7,7 +7,9 @@ NODE ?= node
 merge:
 	@$(NODE) tools/gameempire_merge_latest.js \
 		$(if $(strip $(DRY_RUN)),--dry-run) \
-		$(if $(strip $(PUSH)),--push) \
+		$(if $(filter 1 true yes on,$(PUSH)),--push) \
+		$(if $(filter 0 false no off,$(PUSH)),--no-push) \
+		$(if $(strip $(NO_PUSH)),--no-push) \
 		$(if $(strip $(UPSTREAM_REMOTE)),--upstream-remote "$(UPSTREAM_REMOTE)") \
 		$(if $(strip $(UPSTREAM_URL)),--upstream-url "$(UPSTREAM_URL)") \
 		$(if $(strip $(UPSTREAM_BRANCH)),--upstream-branch "$(UPSTREAM_BRANCH)") \
@@ -23,6 +25,7 @@ help:
 	@echo ""
 	@echo "Options:"
 	@echo "  DRY_RUN=1           Print git commands without changing the repo"
-	@echo "  PUSH=1              Push target branch, immutable tag, and gameempire-mcp-latest"
+	@echo "  PUSH=1              Push target branch, immutable tag, and gameempire-mcp-latest (default)"
+	@echo "  NO_PUSH=1           Do not push after the local merge/tag update"
 	@echo "  UPSTREAM_BRANCH=x   Override upstream branch (default: beta)"
 	@echo "  TARGET_BRANCH=x     Override target branch (default: gameempire/protect)"

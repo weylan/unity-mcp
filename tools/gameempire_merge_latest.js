@@ -23,7 +23,7 @@ function parseArgs(argv) {
     cwd: process.cwd(),
     ...DEFAULTS,
     fetch: true,
-    push: false,
+    push: true,
     dryRun: false,
   };
 
@@ -40,6 +40,7 @@ function parseArgs(argv) {
     else if (arg === "--timezone") opts.timezone = argv[++i] || opts.timezone;
     else if (arg === "--no-fetch") opts.fetch = false;
     else if (arg === "--push") opts.push = true;
+    else if (arg === "--no-push") opts.push = false;
     else if (arg === "--dry-run") opts.dryRun = true;
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
@@ -65,7 +66,8 @@ function usage() {
     "  --tag-prefix <prefix>      Default: gameempire-mcp-v",
     "  --latest-tag <name>        Default: gameempire-mcp-latest",
     "  --no-fetch                 Skip git fetch",
-    "  --push                     Push branch, immutable tag, and latest tag",
+    "  --push                     Push branch, immutable tag, and latest tag (default)",
+    "  --no-push                  Do not push after the local merge/tag update",
     "  --dry-run                  Print git commands without changing the repo",
   ].join("\n");
 }
@@ -290,7 +292,7 @@ function mergeLatest(opts) {
     runGit(["push", opts.originRemote, `refs/tags/${immutableTag}`], opts);
     runGit(["push", opts.originRemote, "-f", `refs/tags/${opts.latestTag}`], opts);
   } else {
-    console.log("Not pushed. Re-run with --push or PUSH=1 when ready.");
+    console.log("Not pushed because --no-push was selected.");
   }
 
   return { immutableTag, latestTag: opts.latestTag, head };
