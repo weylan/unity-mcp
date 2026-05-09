@@ -44,6 +44,7 @@ namespace MCPForUnity.Editor.Resources.Editor
                         ["name"] = tool.Name,
                         ["group"] = tool.Group ?? "core",
                         ["enabled"] = discovery.IsToolEnabled(tool.Name),
+                        ["source"] = discovery.GetToolStateSource(tool.Name),
                         ["description"] = tool.Description,
                         ["auto_register"] = tool.AutoRegister,
                         ["is_built_in"] = tool.IsBuiltIn,
@@ -66,6 +67,8 @@ namespace MCPForUnity.Editor.Resources.Editor
 
                 var result = new JObject
                 {
+                    ["tool_visibility_version"] = 1,
+                    ["project_config_path"] = ProjectToolConfig.Instance.ConfigPath,
                     ["tools"] = toolsArray,
                     ["groups"] = new JArray(groups)
                 };

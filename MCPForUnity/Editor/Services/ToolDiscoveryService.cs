@@ -9,10 +9,18 @@ using UnityEditor;
 
 namespace MCPForUnity.Editor.Services
 {
-    public class ToolDiscoveryService : IToolDiscoveryService
+    public class ToolDiscoveryService : IToolDiscoveryService, IDisposable
     {
         private Dictionary<string, ToolMetadata> _cachedTools;
+        private readonly ProjectToolConfig _projectToolConfig;
+        private bool _disposed;
 
+        public ToolDiscoveryService()
+        {
+            _projectToolConfig = ProjectToolConfig.Instance;
+            _projectToolConfig.LoadOrDefault();
+            _projectToolConfig.OnReloaded += OnProjectToolConfigReloaded;
+        }
 
         public List<ToolMetadata> DiscoverAllTools()
         {
@@ -82,6 +90,11 @@ namespace MCPForUnity.Editor.Services
                 return false;
             }
 
+            if (_projectToolConfig.TryGet(toolName, out bool projectEnabled))
+            {
+                return projectEnabled;
+            }
+
             string key = GetToolPreferenceKey(toolName);
             if (EditorPrefs.HasKey(key))
             {
@@ -101,6 +114,18 @@ namespace MCPForUnity.Editor.Services
 
             string key = GetToolPreferenceKey(toolName);
             EditorPrefs.SetBool(key, enabled);
+            _projectToolConfig.Set(toolName, enabled);
+            _projectToolConfig.Save();
+        }
+
+        public string GetToolStateSource(string toolName)
+        {
+            return _projectToolConfig.GetSource(toolName);
+        }
+
+        public bool HasProjectToolOverride(string toolName)
+        {
+            return _projectToolConfig.HasOverride(toolName);
         }
 
         private ToolMetadata ExtractToolMetadata(Type type, McpForUnityToolAttribute toolAttr)
@@ -214,6 +239,33 @@ namespace MCPForUnity.Editor.Services
         public void InvalidateCache()
         {
             _cachedTools = null;
+        }
+
+        private void OnProjectToolConfigReloaded()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            InvalidateCache();
+
+            var client = MCPServiceLocator.TransportManager.GetClient(Transport.TransportMode.Http);
+            if (client != null && client.IsConnected)
+            {
+                _ = client.ReregisterToolsAsync();
+            }
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            _projectToolConfig.OnReloaded -= OnProjectToolConfigReloaded;
         }
 
         private void EnsurePreferenceInitialized(ToolMetadata metadata)

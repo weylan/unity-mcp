@@ -70,10 +70,39 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
         public string TransportName => TransportDisplayName;
         public TransportState State => _state;
 
-        private Task<List<ToolMetadata>> GetEnabledToolsOnMainThreadAsync(CancellationToken token)
+        private Task<(List<ToolMetadata> EnabledTools, JArray ToolStates)> GetToolRegistrationSnapshotOnMainThreadAsync(CancellationToken token)
         {
             return TransportCommandDispatcher.RunOnMainThreadAsync(
-                () => _toolDiscoveryService?.GetEnabledTools() ?? new List<ToolMetadata>(),
+                () =>
+                {
+                    var allTools = _toolDiscoveryService?.DiscoverAllTools() ?? new List<ToolMetadata>();
+                    var enabledTools = new List<ToolMetadata>();
+                    var toolStatesArray = new JArray();
+
+                    foreach (var tool in allTools)
+                    {
+                        bool enabled = _toolDiscoveryService.IsToolEnabled(tool.Name);
+                        if (enabled)
+                        {
+                            enabledTools.Add(tool);
+                        }
+
+                        toolStatesArray.Add(new JObject
+                        {
+                            ["name"] = tool.Name,
+                            ["description"] = tool.Description,
+                            ["structured_output"] = tool.StructuredOutput,
+                            ["requires_polling"] = tool.RequiresPolling,
+                            ["poll_action"] = tool.PollAction ?? "status",
+                            ["max_poll_seconds"] = tool.MaxPollSeconds,
+                            ["group"] = string.IsNullOrWhiteSpace(tool.Group) ? "core" : tool.Group,
+                            ["enabled"] = enabled,
+                            ["source"] = _toolDiscoveryService.GetToolStateSource(tool.Name)
+                        });
+                    }
+
+                    return (enabledTools, toolStatesArray);
+                },
                 token);
         }
 
@@ -527,7 +556,9 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
             if (_toolDiscoveryService == null) return;
 
             token.ThrowIfCancellationRequested();
-            var tools = await GetEnabledToolsOnMainThreadAsync(token).ConfigureAwait(false);
+            var snapshot = await GetToolRegistrationSnapshotOnMainThreadAsync(token).ConfigureAwait(false);
+            var tools = snapshot.EnabledTools;
+            var toolStatesArray = snapshot.ToolStates;
             token.ThrowIfCancellationRequested();
             McpLog.Info($"[WebSocket] Preparing to register {tools.Count} tool(s) with the bridge.", false);
             var toolsArray = new JArray();
@@ -567,7 +598,9 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
             var payload = new JObject
             {
                 ["type"] = "register_tools",
-                ["tools"] = toolsArray
+                ["tool_visibility_version"] = 1,
+                ["tools"] = toolsArray,
+                ["tool_states"] = toolStatesArray
             };
 
             await SendJsonAsync(payload, token).ConfigureAwait(false);

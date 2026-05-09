@@ -50,6 +50,9 @@ def register_all_tools(mcp: FastMCP, *, project_scoped_tools: bool = True):
         tool_name = tool_info['name']
         description = tool_info['description']
         kwargs = tool_info['kwargs']
+        existing_tags: set[str] = set(kwargs.get("tags") or set())
+        existing_tags.add(f"tool:{tool_name}")
+        kwargs["tags"] = existing_tags
 
         if not project_scoped_tools and tool_name == "execute_custom_tool":
             logger.info(
@@ -158,8 +161,8 @@ async def sync_tool_visibility_from_unity(
             )
             return {"error": "No tool data returned from Unity"}
 
-        # Filter to enabled tools only — _sync_server_tool_visibility treats
-        # the list as "registered" (i.e. enabled) tools.
+        # Keep the full list for per-tool visibility sync.  Older Unity
+        # packages without enabled/source fields still fall back to group sync.
         enabled_tools = [t for t in tools if t.get("enabled", True)]
 
         logger.info(
@@ -167,7 +170,7 @@ async def sync_tool_visibility_from_unity(
             len(enabled_tools), len(tools),
         )
 
-        PluginHub._sync_server_tool_visibility(enabled_tools)
+        PluginHub._sync_server_tool_visibility(tools)
 
         # Register custom (non-built-in) tools via CustomToolService.
         # The extended get_tool_states response includes is_built_in,

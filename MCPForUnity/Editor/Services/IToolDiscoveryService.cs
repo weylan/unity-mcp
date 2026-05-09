@@ -60,6 +60,16 @@ namespace MCPForUnity.Editor.Services
         bool IsToolEnabled(string toolName);
 
         /// <summary>
+        /// Returns where the tool enabled state is currently sourced from
+        /// </summary>
+        string GetToolStateSource(string toolName);
+
+        /// <summary>
+        /// Returns true when the tool has an explicit project config override
+        /// </summary>
+        bool HasProjectToolOverride(string toolName);
+
+        /// <summary>
         /// Updates the enabled state for a tool
         /// </summary>
         void SetToolEnabled(string toolName, bool enabled);

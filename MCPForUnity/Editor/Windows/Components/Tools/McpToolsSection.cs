@@ -31,6 +31,9 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
         private Button rescanButton;
         private Button reconfigureButton;
         private VisualElement categoryContainer;
+        private Label projectConfigPathLabel;
+        private Button reloadProjectConfigButton;
+        private Button exportProjectConfigButton;
         private List<ToolMetadata> allTools = new();
         private readonly Dictionary<string, Toggle> groupToggleMap = new();
         private readonly List<(Foldout foldout, string title, List<ToolMetadata> tools)> foldoutEntries = new();
@@ -67,6 +70,7 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
             rescanButton = Root.Q<Button>("rescan-button");
             reconfigureButton = Root.Q<Button>("reconfigure-button");
             categoryContainer = Root.Q<VisualElement>("tool-category-container");
+            EnsureProjectConfigControls();
         }
 
         private void RegisterCallbacks()
@@ -114,6 +118,22 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
                 reconfigureButton.AddToClassList("tool-action-button");
                 reconfigureButton.clicked += OnReconfigureClientsClicked;
             }
+
+            if (reloadProjectConfigButton != null)
+            {
+                reloadProjectConfigButton.clicked += () =>
+                {
+                    ProjectToolConfig.Instance.LoadOrDefault();
+                    MCPServiceLocator.ToolDiscovery.InvalidateCache();
+                    Refresh();
+                    ReregisterToolsAsync();
+                };
+            }
+
+            if (exportProjectConfigButton != null)
+            {
+                exportProjectConfigButton.clicked += ExportCurrentStatesToProjectConfig;
+            }
         }
 
         /// <summary>
@@ -137,6 +157,7 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
             bool hasTools = allTools.Count > 0;
             enableAllButton?.SetEnabled(hasTools);
             disableAllButton?.SetEnabled(hasTools);
+            UpdateProjectConfigPathLabel();
 
             if (noteLabel != null)
             {
@@ -287,6 +308,11 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
 
             var tagsContainer = new VisualElement();
             tagsContainer.AddToClassList("tool-tags");
+
+            if (MCPServiceLocator.ToolDiscovery.HasProjectToolOverride(tool.Name))
+            {
+                tagsContainer.Add(CreateTag("Pinned by project config"));
+            }
 
             bool defaultEnabled = tool.AutoRegister || tool.IsBuiltIn;
             tagsContainer.Add(CreateTag(defaultEnabled ? "On by default" : "Off by default"));
@@ -584,6 +610,56 @@ namespace MCPForUnity.Editor.Windows.Components.Tools
             var label = new Label(message);
             label.AddToClassList("help-text");
             categoryContainer?.Add(label);
+        }
+
+        private void EnsureProjectConfigControls()
+        {
+            if (categoryContainer == null || Root.Q<VisualElement>("project-tool-config-row") != null)
+            {
+                return;
+            }
+
+            var row = new VisualElement { name = "project-tool-config-row" };
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.flexWrap = Wrap.Wrap;
+            row.style.alignItems = Align.Center;
+            row.style.marginBottom = 6;
+
+            projectConfigPathLabel = new Label();
+            projectConfigPathLabel.style.marginRight = 8;
+            projectConfigPathLabel.style.flexGrow = 1;
+            projectConfigPathLabel.style.whiteSpace = WhiteSpace.Normal;
+            row.Add(projectConfigPathLabel);
+
+            reloadProjectConfigButton = new Button { text = "Reload from disk" };
+            reloadProjectConfigButton.AddToClassList("tool-action-button");
+            reloadProjectConfigButton.style.marginRight = 4;
+            row.Add(reloadProjectConfigButton);
+
+            exportProjectConfigButton = new Button { text = "Export current states -> project config" };
+            exportProjectConfigButton.AddToClassList("tool-action-button");
+            row.Add(exportProjectConfigButton);
+
+            categoryContainer.parent?.Insert(categoryContainer.parent.IndexOf(categoryContainer), row);
+        }
+
+        private void UpdateProjectConfigPathLabel()
+        {
+            if (projectConfigPathLabel != null)
+            {
+                projectConfigPathLabel.text = $"Project tool config: {ProjectToolConfig.Instance.ConfigPath}";
+            }
+        }
+
+        private void ExportCurrentStatesToProjectConfig()
+        {
+            foreach (var tool in allTools)
+            {
+                ProjectToolConfig.Instance.Set(tool.Name, MCPServiceLocator.ToolDiscovery.IsToolEnabled(tool.Name));
+            }
+            ProjectToolConfig.Instance.Save();
+            Refresh();
+            ReregisterToolsAsync();
         }
 
         private VisualElement CreateManageSceneActions()
