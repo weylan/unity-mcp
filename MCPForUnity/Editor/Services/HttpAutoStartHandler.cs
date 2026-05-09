@@ -18,22 +18,32 @@ namespace MCPForUnity.Editor.Services
     internal static class HttpAutoStartHandler
     {
         private const string SessionInitKey = "HttpAutoStartHandler.SessionInitialized";
+        private const string ManualSessionStopSuppressedKey = "HttpAutoStartHandler.ManualSessionStopSuppressed";
+        private const double ExternalServerPollIntervalSeconds = 2.0;
+        private const double FailedConnectCooldownSeconds = 15.0;
+        private static double _lastExternalServerPollTime;
+        private static double _lastFailedConnectTime = double.NegativeInfinity;
+        private static string _lastFailedConnectBaseUrl;
+        private static bool _autoConnectInProgress;
+        private static bool _editorUpdateRegistered;
 
         static HttpAutoStartHandler()
         {
-            // SessionState resets on editor process start but persists across domain reloads.
-            // Only run once per session — let HttpBridgeReloadHandler handle reload-resume cases.
-            if (SessionState.GetBool(SessionInitKey, false)) return;
-
             if (Application.isBatchMode &&
                 string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("UNITY_MCP_ALLOW_BATCH")))
             {
                 return;
             }
 
+            RefreshExternalServerPolling();
+
+            // SessionState resets on editor process start but persists across domain reloads.
+            // Only run once per session — let HttpBridgeReloadHandler handle reload-resume cases.
+            if (SessionState.GetBool(SessionInitKey, false)) return;
+
             // Only check lightweight EditorPrefs here — services like EditorConfigurationCache
             // and MCPServiceLocator may not be initialized yet on fresh editor launch.
-            bool autoStartEnabled = EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false);
+            bool autoStartEnabled = IsAutoStartOnLoadEnabled();
             if (!autoStartEnabled) return;
 
             SessionState.SetBool(SessionInitKey, true);
@@ -46,7 +56,7 @@ namespace MCPForUnity.Editor.Services
         {
             try
             {
-                bool autoStartEnabled = EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false);
+                bool autoStartEnabled = IsAutoStartOnLoadEnabled();
                 if (!autoStartEnabled) return;
 
                 bool useHttp = EditorConfigurationCache.Instance.UseHttpTransport;
@@ -63,8 +73,174 @@ namespace MCPForUnity.Editor.Services
             }
         }
 
+        internal static void RefreshExternalServerPolling()
+        {
+            bool shouldRegister = ShouldPollExternalLocalServer();
+            if (shouldRegister && !_editorUpdateRegistered)
+            {
+                EditorApplication.update += OnEditorUpdate;
+                _editorUpdateRegistered = true;
+            }
+            else if (!shouldRegister && _editorUpdateRegistered)
+            {
+                EditorApplication.update -= OnEditorUpdate;
+                _editorUpdateRegistered = false;
+            }
+        }
+
+        internal static bool IsAutoStartOnLoadEnabled()
+        {
+            return EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, EditorPrefDefaults.AutoStartOnLoad);
+        }
+
+        private static bool ShouldPollExternalLocalServer()
+        {
+            try
+            {
+                if (!IsAutoStartOnLoadEnabled()) return false;
+                if (!EditorPrefs.GetBool(EditorPrefKeys.UseHttpTransport, true)) return false;
+
+                string scope = EditorPrefs.GetString(EditorPrefKeys.HttpTransportScope, string.Empty);
+                if (string.Equals(scope, "remote", StringComparison.OrdinalIgnoreCase)) return false;
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                McpLog.Debug($"[HTTP Auto-Start] Polling eligibility check failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static void OnEditorUpdate()
+        {
+            double now = EditorApplication.timeSinceStartup;
+            if (now - _lastExternalServerPollTime < ExternalServerPollIntervalSeconds)
+            {
+                return;
+            }
+            _lastExternalServerPollTime = now;
+
+            if (_autoConnectInProgress)
+            {
+                return;
+            }
+
+            if (!CanAttemptExternalLocalConnect(logPolicyError: false))
+            {
+                return;
+            }
+
+            _ = PollExternalServerAsync();
+        }
+
+        private static async Task PollExternalServerAsync()
+        {
+            if (!TryBeginAutoConnect())
+            {
+                return;
+            }
+
+            try
+            {
+                await TryConnectIfLocalServerReachableAsync();
+            }
+            finally
+            {
+                EndAutoConnect();
+            }
+        }
+
+        private static bool TryBeginAutoConnect()
+        {
+            if (_autoConnectInProgress)
+            {
+                return false;
+            }
+
+            _autoConnectInProgress = true;
+            return true;
+        }
+
+        private static void EndAutoConnect()
+        {
+            _autoConnectInProgress = false;
+        }
+
+        internal static void RecordManualSessionStop()
+        {
+            SessionState.SetBool(ManualSessionStopSuppressedKey, true);
+        }
+
+        internal static void ClearManualSessionStopSuppression()
+        {
+            SessionState.SetBool(ManualSessionStopSuppressedKey, false);
+        }
+
+        internal static void ClearExternalConnectFailureCooldown()
+        {
+            _lastFailedConnectTime = double.NegativeInfinity;
+            _lastFailedConnectBaseUrl = null;
+        }
+
+        private static bool IsManualSessionStopSuppressed()
+        {
+            return SessionState.GetBool(ManualSessionStopSuppressedKey, false);
+        }
+
+        private static bool CanAttemptExternalLocalConnect(bool logPolicyError)
+        {
+            if (!IsAutoStartOnLoadEnabled()) return false;
+            if (!EditorConfigurationCache.Instance.UseHttpTransport) return false;
+            if (HttpEndpointUtility.IsRemoteScope()) return false;
+            if (MCPServiceLocator.Bridge.IsRunning) return false;
+            if (IsManualSessionStopSuppressed()) return false;
+
+            string localBaseUrl = HttpEndpointUtility.GetLocalBaseUrl();
+            if (IsFailureCooldownActive(localBaseUrl)) return false;
+
+            if (!HttpEndpointUtility.IsHttpLocalUrlAllowedForLaunch(localBaseUrl, out string policyError))
+            {
+                if (logPolicyError)
+                {
+                    McpLog.Debug($"[HTTP Auto-Start] Local URL blocked by security policy: {policyError}");
+                }
+                return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsFailureCooldownActive(string localBaseUrl)
+        {
+            if (string.IsNullOrEmpty(_lastFailedConnectBaseUrl))
+            {
+                return false;
+            }
+
+            if (!string.Equals(_lastFailedConnectBaseUrl, localBaseUrl, StringComparison.Ordinal))
+            {
+                ClearExternalConnectFailureCooldown();
+                return false;
+            }
+
+            double elapsed = EditorApplication.timeSinceStartup - _lastFailedConnectTime;
+            return elapsed >= 0 && elapsed < FailedConnectCooldownSeconds;
+        }
+
+        private static void RecordExternalConnectFailure()
+        {
+            _lastFailedConnectBaseUrl = HttpEndpointUtility.GetLocalBaseUrl();
+            _lastFailedConnectTime = EditorApplication.timeSinceStartup;
+        }
+
         private static async Task AutoStartAsync()
         {
+            if (!TryBeginAutoConnect())
+            {
+                return;
+            }
+
             try
             {
                 bool isLocal = !HttpEndpointUtility.IsRemoteScope();
@@ -89,6 +265,7 @@ namespace MCPForUnity.Editor.Services
                             McpLog.Warn("[HTTP Auto-Start] Failed to start local HTTP server");
                             return;
                         }
+                        ClearExternalConnectFailureCooldown();
                     }
 
                     // Wait for the server to become reachable, then connect.
@@ -103,6 +280,43 @@ namespace MCPForUnity.Editor.Services
             catch (Exception ex)
             {
                 McpLog.Warn($"[HTTP Auto-Start] Failed: {ex.Message}");
+            }
+            finally
+            {
+                EndAutoConnect();
+            }
+        }
+
+        internal static async Task<bool> TryConnectIfLocalServerReachableAsync()
+        {
+            try
+            {
+                if (!CanAttemptExternalLocalConnect(logPolicyError: true)) return false;
+
+                bool reachable = MCPServiceLocator.Server.IsLocalHttpServerReachable();
+                if (!reachable)
+                {
+                    return false;
+                }
+
+                bool started = await MCPServiceLocator.Bridge.StartAsync();
+                if (!started)
+                {
+                    RecordExternalConnectFailure();
+                    return false;
+                }
+
+                ClearManualSessionStopSuppression();
+                ClearExternalConnectFailureCooldown();
+                McpLog.Info("[HTTP Auto-Start] Connected to reachable local HTTP server");
+                MCPForUnityEditorWindow.RequestHealthVerification();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                RecordExternalConnectFailure();
+                McpLog.Debug($"[HTTP Auto-Start] Local server connect check failed: {ex.Message}");
+                return false;
             }
         }
 
@@ -119,7 +333,7 @@ namespace MCPForUnity.Editor.Services
             for (int attempt = 0; attempt < maxAttempts; attempt++)
             {
                 // Abort if user changed settings while we were waiting.
-                if (!EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false)) return;
+                if (!IsAutoStartOnLoadEnabled()) return;
                 if (!EditorConfigurationCache.Instance.UseHttpTransport) return;
                 if (MCPServiceLocator.TransportManager.IsRunning(TransportMode.Http)) return;
 
@@ -130,6 +344,7 @@ namespace MCPForUnity.Editor.Services
                     bool started = await MCPServiceLocator.Bridge.StartAsync();
                     if (started)
                     {
+                        ClearManualSessionStopSuppression();
                         McpLog.Info("[HTTP Auto-Start] Bridge started successfully");
                         MCPForUnityEditorWindow.RequestHealthVerification();
                         return;
@@ -141,6 +356,7 @@ namespace MCPForUnity.Editor.Services
                     bool started = await MCPServiceLocator.Bridge.StartAsync();
                     if (started)
                     {
+                        ClearManualSessionStopSuppression();
                         McpLog.Info("[HTTP Auto-Start] Bridge started successfully (late connect)");
                         MCPForUnityEditorWindow.RequestHealthVerification();
                         return;
@@ -163,6 +379,7 @@ namespace MCPForUnity.Editor.Services
             bool started = await MCPServiceLocator.Bridge.StartAsync();
             if (started)
             {
+                ClearManualSessionStopSuppression();
                 McpLog.Info("[HTTP Auto-Start] Bridge started successfully (remote)");
                 MCPForUnityEditorWindow.RequestHealthVerification();
             }

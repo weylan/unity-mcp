@@ -196,6 +196,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     string scope = selected == TransportProtocol.HTTPRemote ? "remote" : "local";
                     EditorConfigurationCache.Instance.SetHttpTransportScope(scope);
                 }
+                HttpAutoStartHandler.RefreshExternalServerPolling();
 
                 // Swap the displayed URL to match the newly selected scope
                 SyncUrlFieldToScope();
@@ -633,6 +634,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                 if (serverRunning)
                 {
                     // Stop Server: end session first (if active), then stop the server.
+                    HttpAutoStartHandler.RecordManualSessionStop();
                     if (bridgeService.IsRunning)
                     {
                         await bridgeService.StopAsync();
@@ -641,6 +643,10 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     if (!stopped)
                     {
                         McpLog.Warn("Failed to stop HTTP server or no server was running");
+                    }
+                    else
+                    {
+                        HttpAutoStartHandler.ClearExternalConnectFailureCooldown();
                     }
                 }
                 else
@@ -659,6 +665,7 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     bool serverStarted = MCPServiceLocator.Server.StartLocalHttpServer();
                     if (serverStarted)
                     {
+                        HttpAutoStartHandler.ClearExternalConnectFailureCooldown();
                         await TryAutoStartSessionAsync();
                     }
                     else
@@ -704,6 +711,8 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     bool started = await bridgeService.StartAsync();
                     if (started)
                     {
+                        HttpAutoStartHandler.ClearManualSessionStopSuppression();
+                        HttpAutoStartHandler.ClearExternalConnectFailureCooldown();
                         await VerifyBridgeConnectionAsync();
                         UpdateConnectionStatus();
                         return;
@@ -719,6 +728,8 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     bool started = await bridgeService.StartAsync();
                     if (started)
                     {
+                        HttpAutoStartHandler.ClearManualSessionStopSuppression();
+                        HttpAutoStartHandler.ClearExternalConnectFailureCooldown();
                         await VerifyBridgeConnectionAsync();
                         UpdateConnectionStatus();
                         return;
@@ -786,6 +797,10 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     try { EditorPrefs.DeleteKey(EditorPrefKeys.ResumeStdioAfterReload); } catch { }
                     try { EditorPrefs.DeleteKey(EditorPrefKeys.ResumeHttpAfterReload); } catch { }
 
+                    if (IsHttpLocalSelected())
+                    {
+                        HttpAutoStartHandler.RecordManualSessionStop();
+                    }
                     await bridgeService.StopAsync();
                 }
                 else
@@ -814,6 +829,11 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     bool started = await bridgeService.StartAsync();
                     if (started)
                     {
+                        if (IsHttpLocalSelected())
+                        {
+                            HttpAutoStartHandler.ClearManualSessionStopSuppression();
+                            HttpAutoStartHandler.ClearExternalConnectFailureCooldown();
+                        }
                         await VerifyBridgeConnectionAsync();
                     }
                     else

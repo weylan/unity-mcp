@@ -170,11 +170,11 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
 
             if (autoStartOnLoadToggle != null)
             {
-                autoStartOnLoadToggle.tooltip = "Automatically start the local HTTP server and connect the MCP bridge when the Unity Editor opens. Only applies to HTTP transport (stdio always auto-starts).";
+                autoStartOnLoadToggle.tooltip = "Automatically start or connect to a local HTTP server and connect the MCP bridge when the Unity Editor opens. Only applies to HTTP transport (stdio always auto-starts).";
                 var autoStartLabel = autoStartOnLoadToggle.parent?.Q<Label>();
                 if (autoStartLabel != null)
                     autoStartLabel.tooltip = autoStartOnLoadToggle.tooltip;
-                autoStartOnLoadToggle.SetValueWithoutNotify(EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false));
+                autoStartOnLoadToggle.SetValueWithoutNotify(EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, EditorPrefDefaults.AutoStartOnLoad));
             }
 
             gitUrlOverride.value = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
@@ -252,6 +252,9 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
                 autoStartOnLoadToggle.RegisterValueChangedCallback(evt =>
                 {
                     EditorPrefs.SetBool(EditorPrefKeys.AutoStartOnLoad, evt.newValue);
+                    HttpAutoStartHandler.ClearManualSessionStopSuppression();
+                    HttpAutoStartHandler.ClearExternalConnectFailureCooldown();
+                    HttpAutoStartHandler.RefreshExternalServerPolling();
                 });
             }
 
@@ -400,7 +403,7 @@ namespace MCPForUnity.Editor.Windows.Components.Advanced
 
             gitUrlOverride.value = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
             if (autoStartOnLoadToggle != null)
-                autoStartOnLoadToggle.value = EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, false);
+                autoStartOnLoadToggle.value = EditorPrefs.GetBool(EditorPrefKeys.AutoStartOnLoad, EditorPrefDefaults.AutoStartOnLoad);
             debugLogsToggle.value = EditorPrefs.GetBool(EditorPrefKeys.DebugLogs, false);
             if (logRecordToggle != null)
                 logRecordToggle.value = McpLogRecord.IsEnabled;
