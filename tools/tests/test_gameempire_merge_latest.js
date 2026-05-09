@@ -29,6 +29,16 @@ function git(cwd, args) {
   return result.stdout.trim();
 }
 
+function silenceConsole(fn) {
+  const originalLog = console.log;
+  try {
+    console.log = () => {};
+    return fn();
+  } finally {
+    console.log = originalLog;
+  }
+}
+
 function withTempRepo(fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gameempire-merge-test-"));
   try {
@@ -76,6 +86,7 @@ withTempRepo((cwd) => {
 });
 
 assert.strictEqual(parseArgs([]).push, true);
+assert.strictEqual(parseArgs(["--quiet"]).quiet, true);
 assert.strictEqual(parseArgs(["--no-push"]).push, false);
 assert.strictEqual(parseArgs(["--no-push", "--push"]).push, true);
 assert.strictEqual(parseArgs(["--push", "--no-push"]).push, false);
@@ -86,9 +97,9 @@ assert.strictEqual(parseArgs(["--release-only", "--merge"]).mode, "merge");
 assert.strictEqual(parseArgs(["--merge", "--release-only"]).mode, "release");
 
 withTempGitRepo((cwd) => {
-  const opts = { cwd, ...DEFAULTS, fetch: false, push: false, dryRun: false };
+  const opts = { cwd, ...DEFAULTS, fetch: false, push: false, dryRun: false, quiet: true };
 
-  const released = releaseCurrent(opts);
+  const released = silenceConsole(() => releaseCurrent(opts));
   const head = git(cwd, ["rev-parse", "HEAD"]);
   const latest = git(cwd, ["rev-parse", DEFAULTS.latestTag]);
   const headTags = git(cwd, ["tag", "--points-at", "HEAD"]).split(/\r?\n/);
@@ -101,7 +112,7 @@ withTempGitRepo((cwd) => {
 });
 
 withTempGitRepo((cwd) => {
-  assert.strictEqual(main(["--cwd", cwd, "--release-only", "--no-fetch", "--no-push"]), 0);
+  assert.strictEqual(silenceConsole(() => main(["--cwd", cwd, "--release-only", "--no-fetch", "--no-push", "--quiet"])), 0);
 
   const head = git(cwd, ["rev-parse", "HEAD"]);
   const latest = git(cwd, ["rev-parse", DEFAULTS.latestTag]);

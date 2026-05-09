@@ -25,6 +25,7 @@ function parseArgs(argv) {
     fetch: true,
     push: true,
     dryRun: false,
+    quiet: false,
     mode: "merge",
   };
 
@@ -45,6 +46,7 @@ function parseArgs(argv) {
     else if (arg === "--merge") opts.mode = "merge";
     else if (arg === "--release-only" || arg === "--no-merge") opts.mode = "release";
     else if (arg === "--dry-run") opts.dryRun = true;
+    else if (arg === "--quiet") opts.quiet = true;
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else throw new Error(`Unknown argument: ${arg}`);
   }
@@ -87,7 +89,7 @@ function runGit(args, opts, capture = false) {
   const result = spawnSync("git", args, {
     cwd: opts.cwd,
     encoding: "utf8",
-    stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit",
+    stdio: capture ? ["ignore", "pipe", "pipe"] : opts.quiet ? "ignore" : "inherit",
   });
 
   if (result.status !== 0) {
