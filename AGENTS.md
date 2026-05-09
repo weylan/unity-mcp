@@ -12,21 +12,21 @@
 
 ## 当前 fork 目标
 
-这是 `weylan/unity-mcp` 的私有开发 fork，从上游主干 fork 后用于单独增加和维护私有功能。当前私有保护分支是 `gameempire/protect`。日常开发优先满足私有 Unity MCP 使用需求，同时保持能够从上游 `CoplayDev/unity-mcp` 的 `beta` 分支合并。
+这是 `weylan/unity-mcp` 的私有开发 fork，从上游主干 fork 后用于单独增加和维护私有功能。当前唯一开发分支是 `beta`。日常开发优先满足私有 Unity MCP 使用需求，同时保持能够从上游 `CoplayDev/unity-mcp` 的 `beta` 分支合并。
 
 本 fork 采用单分支开发规则：
 
-- 只保留并使用 `gameempire/protect` 一个私有开发分支。
-- 所有开发、测试、修复、私有发布、Codex/Claude/Cursor agent 工作都必须直接在 `gameempire/protect` 上完成。
+- 本地和 `origin` 远端只保留并使用 `beta` 一个开发分支。
+- 所有开发、测试、修复、私有发布、Codex/Claude/Cursor agent 工作都必须直接在 `beta` 上完成。
 - 不创建 feature、bugfix、hotfix、codex、临时测试等任何其他本地或远端私有开发分支。
-- 不切换到 `beta`、`main`、`upstream/*` 或其他分支做开发；这些上游引用只用于同步/合并来源，不作为工作分支。
-- 开始任何代码修改前必须确认当前分支是 `gameempire/protect`；如果不在该分支，先切回 `gameempire/protect`，不要在错误分支继续工作。
+- 不切换到 `main`、`gameempire/protect`、`upstream/*` 或其他分支做开发；这些上游引用只用于同步/合并来源，不作为工作分支。
+- 开始任何代码修改前必须确认当前分支是 `beta`；如果不在该分支，先切回 `beta`，不要在错误分支继续工作。
 - 如果发现多余本地分支或 `origin` 上的私有临时分支，应删除它们，避免后续开发落到错误分支。
-- 如果 GitHub 默认分支等限制导致 `origin/beta` 无法删除，则必须用当前 `gameempire/protect` 的提交覆盖/更新 `origin/beta`，让 `origin/beta` 与 `gameempire/protect` 指向同一条开发线；之后仍然只在 `gameempire/protect` 工作。
+- `origin/beta` 是本 fork 的唯一远端开发分支；不要在 `origin` 保留 `gameempire/protect` 或其他私有开发分支。
 
 私有发布链路使用：
 
-- 目标分支：`gameempire/protect`
+- 目标分支：`beta`
 - 上游分支：`upstream/beta`
 - 私有远端：`origin`
 - 不可变标签：`gameempire-mcp-vYYYYMMDD.N`
@@ -107,8 +107,8 @@ make private-source TAG=gameempire-mcp-vYYYYMMDD.N
 - `make test-server`：运行 `Server/tests/` pytest。
 - `make test-unity`：通过 Server CLI 运行 Unity Test Framework 测试，需要 Unity 已运行且 MCP bridge 连接。
 - `make preflight`：私有发布前检查，运行 `check`、工具测试、Server pytest。
-- `make merge`：拉上游 beta，合并到 `gameempire/protect`，更新私有 tag/latest tag。
-- `make release`：不合并上游，只对当前 `gameempire/protect` 做私有发布标签。
+- `make merge`：拉上游 beta，合并到本 fork 的 `beta`，更新私有 tag/latest tag。
+- `make release`：不合并上游，只对当前 `beta` 做私有发布标签。
 
 底层脚本：
 
@@ -192,7 +192,7 @@ Unity API 兼容性要集中在 `MCPForUnity/Runtime/Helpers/Unity*Compat.cs`。
 
 ## 禁止事项
 
-- 不在 `main` 直接开发或提交私有需求。
+- 不在 `main`、`gameempire/protect` 或任何非 `beta` 分支开发或提交私有需求。
 - 不把 `mcpServerPackageSource` 改回上游源，除非用户明确要求。
 - 不跳过必要测试后声称完成。
 - 不新增只使用一次的 helper。
