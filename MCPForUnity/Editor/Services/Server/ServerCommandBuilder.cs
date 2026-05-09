@@ -40,6 +40,22 @@ namespace MCPForUnity.Editor.Services.Server
             }
 
             var (uvxPath, fromUrl, packageName) = AssetPathUtility.GetUvxCommandParts();
+            bool projectScopedTools = EditorPrefs.GetBool(
+                EditorPrefKeys.ProjectScopedToolsLocalHttp,
+                true
+            );
+            string scopedFlag = projectScopedTools ? " --project-scoped-tools" : string.Empty;
+
+            if (AssetPathUtility.TryGetLocalServerPythonLaunch(fromUrl, out string pythonPath, out string entrypointPath))
+            {
+                string localArgs =
+                    $"{QuoteIfNeeded(entrypointPath)} --transport http --http-url {httpUrl}{scopedFlag}";
+                fileName = pythonPath;
+                arguments = localArgs;
+                displayCommand = $"{QuoteIfNeeded(pythonPath)} {localArgs}";
+                return true;
+            }
+
             if (string.IsNullOrEmpty(uvxPath))
             {
                 error = "uv is not installed or found in PATH. Install it or set an override in Advanced Settings.";
@@ -47,14 +63,13 @@ namespace MCPForUnity.Editor.Services.Server
             }
 
             string devFlags = AssetPathUtility.GetUvxDevFlags();
-            bool projectScopedTools = EditorPrefs.GetBool(
-                EditorPrefKeys.ProjectScopedToolsLocalHttp,
-                true
-            );
-            string scopedFlag = projectScopedTools ? " --project-scoped-tools" : string.Empty;
 
             // Use centralized helper for beta server / prerelease args
-            string fromArgs = AssetPathUtility.GetBetaServerFromArgs(quoteFromPath: true);
+            string gitUrlOverride = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
+            string fromArgs = AssetPathUtility.GetBetaServerFromArgs(
+                string.IsNullOrEmpty(gitUrlOverride) ? gitUrlOverride : fromUrl,
+                fromUrl,
+                quoteFromPath: true);
 
             string args = string.IsNullOrEmpty(fromArgs)
                 ? $"{devFlags}{packageName} --transport http --http-url {httpUrl}{scopedFlag}"

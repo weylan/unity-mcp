@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
 using MCPForUnity.Editor.Constants;
 using MCPForUnity.Editor.Services;
 using Newtonsoft.Json.Linq;
@@ -15,6 +16,23 @@ namespace MCPForUnity.Editor.Helpers
     /// </summary>
     public static class AssetPathUtility
     {
+        private const int RemotePackageSourceProbeTimeoutMs = 1500;
+        private const double RemotePackageSourceProbeCacheTtlSeconds = 30.0;
+        private static readonly Dictionary<string, RemoteProbeResult> RemotePackageSourceProbeCache =
+            new Dictionary<string, RemoteProbeResult>(StringComparer.OrdinalIgnoreCase);
+
+        private readonly struct RemoteProbeResult
+        {
+            public RemoteProbeResult(bool reachable, DateTime checkedAtUtc)
+            {
+                Reachable = reachable;
+                CheckedAtUtc = checkedAtUtc;
+            }
+
+            public bool Reachable { get; }
+            public DateTime CheckedAtUtc { get; }
+        }
+
         /// <summary>
         /// Normalizes path separators to forward slashes without modifying the path structure.
         /// Use this for non-asset paths (e.g., file system paths, relative directories).
@@ -216,20 +234,20 @@ namespace MCPForUnity.Editor.Helpers
             string sourceOverride = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
             if (!string.IsNullOrEmpty(sourceOverride))
             {
-                string resolved = ResolveLocalServerPath(sourceOverride);
+                string resolved = ResolveLocalServerPath(sourceOverride.Trim());
                 // Persist the corrected path so future reads are consistent
                 if (resolved != sourceOverride)
                 {
                     EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, resolved);
                     McpLog.Info($"Auto-corrected server source override from '{sourceOverride}' to '{resolved}'");
                 }
-                return resolved;
+                return ResolveRemotePackageSourceWithLocalFallback(resolved);
             }
 
             string packageSource = GetPackageJson()?.Value<string>("mcpServerPackageSource");
             if (!string.IsNullOrWhiteSpace(packageSource))
             {
-                return ResolveLocalServerPath(packageSource.Trim());
+                return ResolveRemotePackageSourceWithLocalFallback(packageSource.Trim());
             }
 
             // Default to PyPI package (avoids Windows long path issues with git clone)
@@ -248,6 +266,387 @@ namespace MCPForUnity.Editor.Helpers
             }
 
             return $"mcpforunityserver=={version}";
+        }
+
+        private static string ResolveRemotePackageSourceWithLocalFallback(string packageSource)
+        {
+            string resolvedSource = ResolveLocalServerPath(packageSource);
+            if (!IsGitHubPackageSource(resolvedSource))
+            {
+                return resolvedSource;
+            }
+
+            if (!TryFindLocalServerFallbackPath(GetMcpPackageFileSystemRootPath(), Application.dataPath, out string localServerPath))
+            {
+                return resolvedSource;
+            }
+
+            bool remoteReachable = IsRemotePackageSourceReachableCached(resolvedSource);
+            string fallbackResolved = ResolveServerPackageSourceWithLocalFallback(
+                resolvedSource,
+                localServerPath,
+                remoteReachable);
+
+            if (!string.Equals(fallbackResolved, resolvedSource, StringComparison.OrdinalIgnoreCase))
+            {
+                McpLog.Warn(
+                    "GitHub server package source is not reachable within the startup probe timeout; " +
+                    $"using local Server source: {fallbackResolved}");
+            }
+
+            return fallbackResolved;
+        }
+
+        internal static string ResolveServerPackageSourceWithLocalFallback(
+            string packageSource,
+            string localServerPath,
+            bool remoteReachable)
+        {
+            if (remoteReachable)
+            {
+                return packageSource;
+            }
+
+            if (IsLocalServerPackagePath(localServerPath))
+            {
+                return Path.GetFullPath(StripFilePrefix(localServerPath));
+            }
+
+            return packageSource;
+        }
+
+        internal static bool TryGetLocalServerPythonLaunch(
+            string packageSource,
+            out string pythonPath,
+            out string entrypointPath)
+        {
+            pythonPath = null;
+            entrypointPath = null;
+
+            if (string.IsNullOrWhiteSpace(packageSource) || !IsLocalPackageReference(packageSource))
+            {
+                return false;
+            }
+
+            string serverPath = StripFilePrefix(ResolveLocalServerPath(packageSource));
+            string fullServerPath;
+            try
+            {
+                fullServerPath = Path.GetFullPath(serverPath);
+            }
+            catch
+            {
+                return false;
+            }
+
+            if (!IsLocalServerPackagePath(fullServerPath))
+            {
+                return false;
+            }
+
+            string entrypoint = Path.Combine(fullServerPath, "src", "main.py");
+            if (!File.Exists(entrypoint))
+            {
+                return false;
+            }
+
+            foreach (string candidate in EnumerateLocalVenvPythonCandidates(fullServerPath))
+            {
+                if (File.Exists(candidate))
+                {
+                    pythonPath = Path.GetFullPath(candidate);
+                    entrypointPath = Path.GetFullPath(entrypoint);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        internal static bool TryFindLocalServerFallbackPath(
+            string packageRootPath,
+            string projectAssetsPath,
+            out string serverPath)
+        {
+            var candidates = new List<string>();
+
+            AddPackageRootServerCandidates(candidates, packageRootPath);
+            AddProjectServerCandidates(candidates, projectAssetsPath);
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string candidate in candidates)
+            {
+                if (string.IsNullOrWhiteSpace(candidate))
+                    continue;
+
+                string fullPath;
+                try
+                {
+                    fullPath = Path.GetFullPath(candidate);
+                }
+                catch
+                {
+                    continue;
+                }
+
+                if (!seen.Add(fullPath))
+                    continue;
+
+                if (IsLocalServerPackagePath(fullPath))
+                {
+                    serverPath = fullPath;
+                    return true;
+                }
+            }
+
+            serverPath = null;
+            return false;
+        }
+
+        private static IEnumerable<string> EnumerateLocalVenvPythonCandidates(string serverPath)
+        {
+            bool isWindows = Application.platform == RuntimePlatform.WindowsEditor;
+            string scriptsDir = isWindows ? "Scripts" : "bin";
+            string[] names = isWindows
+                ? new[] { "python.exe", "python" }
+                : new[] { "python3", "python" };
+
+            foreach (string name in names)
+            {
+                yield return Path.Combine(serverPath, ".venv", scriptsDir, name);
+            }
+        }
+
+        private static string GetMcpPackageFileSystemRootPath()
+        {
+            try
+            {
+                var packageInfo = PackageInfo.FindForAssembly(typeof(AssetPathUtility).Assembly);
+                if (packageInfo != null && !string.IsNullOrEmpty(packageInfo.resolvedPath))
+                {
+                    return packageInfo.resolvedPath;
+                }
+
+                string packageRoot = GetMcpPackageRootPath();
+                if (string.IsNullOrEmpty(packageRoot))
+                {
+                    return null;
+                }
+
+                if (packageRoot.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase))
+                {
+                    string relativePath = packageRoot.Substring("Assets/".Length);
+                    return Path.Combine(Application.dataPath, relativePath);
+                }
+
+                return Path.IsPathRooted(packageRoot) ? packageRoot : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static void AddPackageRootServerCandidates(List<string> candidates, string packageRootPath)
+        {
+            if (string.IsNullOrWhiteSpace(packageRootPath))
+                return;
+
+            string root = StripFilePrefix(packageRootPath);
+            AddServerCandidate(candidates, Path.Combine(root, "Server"));
+
+            try
+            {
+                string current = Path.GetFullPath(root);
+                for (int i = 0; i < 4 && !string.IsNullOrEmpty(current); i++)
+                {
+                    AddServerCandidate(candidates, Path.Combine(current, "Server"));
+
+                    string parent = Directory.GetParent(current)?.FullName;
+                    if (string.IsNullOrEmpty(parent))
+                        break;
+
+                    AddServerCandidate(candidates, Path.Combine(parent, "Server"));
+                    current = parent;
+                }
+            }
+            catch { }
+        }
+
+        private static void AddProjectServerCandidates(List<string> candidates, string projectAssetsPath)
+        {
+            if (string.IsNullOrWhiteSpace(projectAssetsPath))
+                return;
+
+            string assetsPath = StripFilePrefix(projectAssetsPath);
+
+            try
+            {
+                string projectRoot = Directory.GetParent(Path.GetFullPath(assetsPath))?.FullName;
+                string current = projectRoot;
+
+                for (int i = 0; i < 6 && !string.IsNullOrEmpty(current); i++)
+                {
+                    AddServerCandidate(candidates, Path.Combine(current, "Server"));
+                    AddServerCandidate(candidates, Path.Combine(current, "unity-mcp", "Server"));
+
+                    string parent = Directory.GetParent(current)?.FullName;
+                    if (string.IsNullOrEmpty(parent))
+                        break;
+
+                    current = parent;
+                }
+            }
+            catch { }
+        }
+
+        private static void AddServerCandidate(List<string> candidates, string path)
+        {
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                candidates.Add(path);
+            }
+        }
+
+        private static string StripFilePrefix(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return path;
+
+            return path.StartsWith("file://", StringComparison.OrdinalIgnoreCase)
+                ? path.Substring(7)
+                : path;
+        }
+
+        private static bool IsLocalServerPackagePath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+                return false;
+
+            try
+            {
+                string pyprojectPath = Path.Combine(StripFilePrefix(path), "pyproject.toml");
+                if (!File.Exists(pyprojectPath))
+                {
+                    return false;
+                }
+
+                string pyproject = File.ReadAllText(pyprojectPath);
+                return pyproject.IndexOf("mcpforunityserver", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsGitHubPackageSource(string packageSource)
+        {
+            if (string.IsNullOrWhiteSpace(packageSource))
+                return false;
+
+            if (IsLocalPackageReference(packageSource))
+                return false;
+
+            return packageSource.IndexOf("github.com", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static bool IsLocalPackageReference(string packageSource)
+        {
+            if (packageSource.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            try
+            {
+                return Path.IsPathRooted(packageSource);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsRemotePackageSourceReachableCached(string packageSource)
+        {
+            DateTime now = DateTime.UtcNow;
+            if (RemotePackageSourceProbeCache.TryGetValue(packageSource, out RemoteProbeResult cached) &&
+                (now - cached.CheckedAtUtc).TotalSeconds < RemotePackageSourceProbeCacheTtlSeconds)
+            {
+                return cached.Reachable;
+            }
+
+            bool reachable = ProbeRemotePackageSourceReachable(packageSource);
+            RemotePackageSourceProbeCache[packageSource] = new RemoteProbeResult(reachable, now);
+            return reachable;
+        }
+
+        private static bool ProbeRemotePackageSourceReachable(string packageSource)
+        {
+            if (!TryBuildPackageSourceProbeUri(packageSource, out Uri probeUri))
+            {
+                return true;
+            }
+
+            try
+            {
+                var request = (HttpWebRequest)WebRequest.Create(probeUri);
+                request.Method = "HEAD";
+                request.Timeout = RemotePackageSourceProbeTimeoutMs;
+                request.ReadWriteTimeout = RemotePackageSourceProbeTimeoutMs;
+                request.AllowAutoRedirect = false;
+                request.UserAgent = "MCPForUnity";
+
+                using var response = (HttpWebResponse)request.GetResponse();
+                return IsReachableHttpStatus(response.StatusCode);
+            }
+            catch (WebException ex)
+            {
+                // A 2xx/3xx response from github.com means the network path is alive.
+                // Proxy auth, firewall blocks, gateway failures, DNS errors, and timeouts
+                // should fall back to the local Server checkout when available.
+                return ex.Response is HttpWebResponse response && IsReachableHttpStatus(response.StatusCode);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsReachableHttpStatus(HttpStatusCode statusCode)
+        {
+            int code = (int)statusCode;
+            return code >= 200 && code < 400;
+        }
+
+        private static bool TryBuildPackageSourceProbeUri(string packageSource, out Uri probeUri)
+        {
+            probeUri = null;
+            if (string.IsNullOrWhiteSpace(packageSource))
+                return false;
+
+            string source = packageSource.Trim();
+            if (source.StartsWith("git+", StringComparison.OrdinalIgnoreCase))
+            {
+                source = source.Substring(4);
+            }
+
+            int hashIndex = source.IndexOf('#');
+            if (hashIndex >= 0)
+            {
+                source = source.Substring(0, hashIndex);
+            }
+
+            if (!Uri.TryCreate(source, UriKind.Absolute, out Uri sourceUri) ||
+                string.IsNullOrEmpty(sourceUri.Host))
+            {
+                return false;
+            }
+
+            string scheme = string.Equals(sourceUri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                ? Uri.UriSchemeHttp
+                : Uri.UriSchemeHttps;
+            probeUri = new Uri($"{scheme}://{sourceUri.Host}/");
+            return true;
         }
 
         /// <summary>
@@ -337,7 +736,7 @@ namespace MCPForUnity.Editor.Helpers
         {
             string gitUrlOverride = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
             string packageSource = GetMcpServerPackageSource();
-            return GetBetaServerFromArgs(gitUrlOverride, packageSource, quoteFromPath);
+            return GetBetaServerFromArgs(GetEffectivePackageSourceOverride(gitUrlOverride, packageSource), packageSource, quoteFromPath);
         }
 
         /// <summary>
@@ -352,7 +751,8 @@ namespace MCPForUnity.Editor.Helpers
             // Explicit override (local path, git URL, etc.) always wins
             if (!string.IsNullOrEmpty(gitUrlOverride))
             {
-                string fromValue = quoteFromPath ? $"\"{gitUrlOverride}\"" : gitUrlOverride;
+                string overrideSource = string.IsNullOrEmpty(packageSource) ? gitUrlOverride : packageSource;
+                string fromValue = quoteFromPath ? $"\"{overrideSource}\"" : overrideSource;
                 return $"--from {fromValue}";
             }
 
@@ -388,7 +788,12 @@ namespace MCPForUnity.Editor.Helpers
         {
             string gitUrlOverride = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, "");
             string packageSource = GetMcpServerPackageSource();
-            return GetBetaServerFromArgsList(gitUrlOverride, packageSource);
+            return GetBetaServerFromArgsList(GetEffectivePackageSourceOverride(gitUrlOverride, packageSource), packageSource);
+        }
+
+        private static string GetEffectivePackageSourceOverride(string gitUrlOverride, string packageSource)
+        {
+            return string.IsNullOrEmpty(gitUrlOverride) ? gitUrlOverride : packageSource;
         }
 
         /// <summary>
@@ -404,8 +809,9 @@ namespace MCPForUnity.Editor.Helpers
             // Explicit override (local path, git URL, etc.) always wins
             if (!string.IsNullOrEmpty(gitUrlOverride))
             {
+                string overrideSource = string.IsNullOrEmpty(packageSource) ? gitUrlOverride : packageSource;
                 args.Add("--from");
-                args.Add(gitUrlOverride);
+                args.Add(overrideSource);
                 return args;
             }
 

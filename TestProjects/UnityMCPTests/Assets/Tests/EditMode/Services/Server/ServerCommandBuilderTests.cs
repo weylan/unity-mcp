@@ -3,6 +3,7 @@ using MCPForUnity.Editor.Services;
 using MCPForUnity.Editor.Services.Server;
 using MCPForUnity.Editor.Constants;
 using UnityEditor;
+using System.IO;
 
 namespace MCPForUnityTests.Editor.Services.Server
 {
@@ -15,6 +16,8 @@ namespace MCPForUnityTests.Editor.Services.Server
         private ServerCommandBuilder _builder;
         private bool _savedUseHttpTransport;
         private string _savedHttpUrl;
+        private bool _hadGitOverride;
+        private string _savedGitOverride;
 
         [SetUp]
         public void SetUp()
@@ -23,6 +26,8 @@ namespace MCPForUnityTests.Editor.Services.Server
             // Save current settings
             _savedUseHttpTransport = EditorPrefs.GetBool(EditorPrefKeys.UseHttpTransport, true);
             _savedHttpUrl = EditorPrefs.GetString(EditorPrefKeys.HttpBaseUrl, string.Empty);
+            _hadGitOverride = EditorPrefs.HasKey(EditorPrefKeys.GitUrlOverride);
+            _savedGitOverride = EditorPrefs.GetString(EditorPrefKeys.GitUrlOverride, string.Empty);
         }
 
         [TearDown]
@@ -37,6 +42,14 @@ namespace MCPForUnityTests.Editor.Services.Server
             else
             {
                 EditorPrefs.DeleteKey(EditorPrefKeys.HttpBaseUrl);
+            }
+            if (_hadGitOverride)
+            {
+                EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, _savedGitOverride);
+            }
+            else
+            {
+                EditorPrefs.DeleteKey(EditorPrefKeys.GitUrlOverride);
             }
             // Refresh cache to reflect restored values
             EditorConfigurationCache.Instance.Refresh();
@@ -284,6 +297,30 @@ namespace MCPForUnityTests.Editor.Services.Server
         }
 
         [Test]
+        public void TryBuildCommand_LocalServerWithVenv_UsesPythonEntrypoint()
+        {
+            string serverPath = CreateTempLocalServerWithVenv();
+            EditorPrefs.SetBool(EditorPrefKeys.UseHttpTransport, true);
+            EditorPrefs.SetString(EditorPrefKeys.HttpBaseUrl, "http://localhost:8080");
+            EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, serverPath);
+            EditorConfigurationCache.Instance.Refresh();
+
+            bool result = _builder.TryBuildCommand(
+                out string fileName,
+                out string arguments,
+                out string displayCommand,
+                out string error);
+
+            Assert.IsTrue(result, error);
+            Assert.That(fileName, Does.Contain("python"));
+            Assert.That(arguments, Does.Contain(Path.Combine("src", "main.py")));
+            Assert.That(arguments, Does.Contain("--transport http"));
+            Assert.That(arguments, Does.Contain("--http-url http://localhost:8080"));
+            Assert.That(displayCommand, Does.Not.Contain("uvx"));
+            Assert.IsNull(error);
+        }
+
+        [Test]
         public void TryBuildCommand_DoesNotThrow()
         {
             // Act & Assert
@@ -294,6 +331,28 @@ namespace MCPForUnityTests.Editor.Services.Server
         }
 
         #endregion
+
+        private static string CreateTempLocalServerWithVenv()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "unity-mcp-command-tests", Path.GetRandomFileName());
+            string serverPath = Path.Combine(root, "Server");
+            string entrypoint = Path.Combine(serverPath, "src", "main.py");
+            string python = Path.Combine(
+                serverPath,
+                ".venv",
+                UnityEngine.Application.platform == UnityEngine.RuntimePlatform.WindowsEditor ? "Scripts" : "bin",
+                UnityEngine.Application.platform == UnityEngine.RuntimePlatform.WindowsEditor ? "python.exe" : "python");
+
+            Directory.CreateDirectory(Path.GetDirectoryName(entrypoint));
+            Directory.CreateDirectory(Path.GetDirectoryName(python));
+            File.WriteAllText(
+                Path.Combine(serverPath, "pyproject.toml"),
+                "[project]\nname = \"mcpforunityserver\"\n");
+            File.WriteAllText(entrypoint, "print('ok')\n");
+            File.WriteAllText(python, string.Empty);
+
+            return Path.GetFullPath(serverPath);
+        }
 
         #region Interface Implementation Tests
 
