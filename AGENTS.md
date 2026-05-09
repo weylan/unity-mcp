@@ -12,7 +12,17 @@
 
 ## 当前 fork 目标
 
-这是 `weylan/unity-mcp` 的私有开发 fork，当前私有保护分支是 `gameempire/protect`。日常开发优先满足私有 Unity MCP 使用需求，同时保持能够从上游 `CoplayDev/unity-mcp` 的 `beta` 分支合并。
+这是 `weylan/unity-mcp` 的私有开发 fork，从上游主干 fork 后用于单独增加和维护私有功能。当前私有保护分支是 `gameempire/protect`。日常开发优先满足私有 Unity MCP 使用需求，同时保持能够从上游 `CoplayDev/unity-mcp` 的 `beta` 分支合并。
+
+本 fork 采用单分支开发规则：
+
+- 只保留并使用 `gameempire/protect` 一个私有开发分支。
+- 所有开发、测试、修复、私有发布、Codex/Claude/Cursor agent 工作都必须直接在 `gameempire/protect` 上完成。
+- 不创建 feature、bugfix、hotfix、codex、临时测试等任何其他本地或远端私有开发分支。
+- 不切换到 `beta`、`main`、`upstream/*` 或其他分支做开发；这些上游引用只用于同步/合并来源，不作为工作分支。
+- 开始任何代码修改前必须确认当前分支是 `gameempire/protect`；如果不在该分支，先切回 `gameempire/protect`，不要在错误分支继续工作。
+- 如果发现多余本地分支或 `origin` 上的私有临时分支，应删除它们，避免后续开发落到错误分支。
+- 如果 GitHub 默认分支等限制导致 `origin/beta` 无法删除，则必须用当前 `gameempire/protect` 的提交覆盖/更新 `origin/beta`，让 `origin/beta` 与 `gameempire/protect` 指向同一条开发线；之后仍然只在 `gameempire/protect` 工作。
 
 私有发布链路使用：
 
