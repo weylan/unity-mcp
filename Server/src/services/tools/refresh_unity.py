@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 # Blocking reasons that indicate Unity is actually busy (not just stale status).
 # Must match activityPhase values from EditorStateCache.cs
 _REAL_BLOCKING_REASONS = {"compiling", "domain_reload", "running_tests", "asset_import"}
+_PROTECTIVE_REJECTION_REASONS = {
+    "busy",
+    "compiling",
+    "reloading",
+    "running_tests",
+    "tests_running",
+    "shared_editor_guard_blocked",
+}
 
 
 def _in_pytest() -> bool:
@@ -87,6 +95,20 @@ def is_connection_lost_after_send(resp: Any) -> bool:
             return False
         err = (getattr(resp, "error", "") or "").lower()
     return "connection closed" in err or "disconnected" in err or "aborted" in err
+
+
+def is_protective_rejection(resp: Any) -> bool:
+    """True when Unity/MCP intentionally rejected work as normal control flow."""
+    if not isinstance(resp, dict) or resp.get("success", True):
+        return False
+    error = str(resp.get("error") or "").lower()
+    hint = str(resp.get("hint") or "").lower()
+    reason = str(_extract_response_reason(resp) or "").lower()
+    return (
+        error in _PROTECTIVE_REJECTION_REASONS
+        or reason in _PROTECTIVE_REJECTION_REASONS
+        or hint == "retry"
+    )
 
 
 async def send_mutation(
@@ -234,8 +256,23 @@ async def refresh_unity(
             # The subsequent wait_for_ready loop (below) will verify Unity becomes ready.
             logger.info("refresh_unity: Connection lost during compile (expected - domain reload triggered)")
             recovered_from_disconnect = True
-        elif hint == "retry" or "could not connect" in err:
+        elif is_protective_rejection(response_dict):
             # Retryable error - proceed to wait loop if wait_for_ready
+            if not wait_for_ready:
+                logger.info(
+                    "refresh_unity: protective/retry response returned without wait (compile=%s, reason=%s)",
+                    compile,
+                    reason or response_dict.get("error") or "retry",
+                )
+                return MCPResponse(**response_dict)
+            logger.info(
+                "refresh_unity: protective/retry response; waiting for editor readiness (compile=%s, reason=%s)",
+                compile,
+                reason or response_dict.get("error") or "retry",
+            )
+            recovered_from_disconnect = True
+        elif "could not connect" in err:
+            # Retryable transport issue - proceed to wait loop if wait_for_ready
             if not wait_for_ready:
                 return MCPResponse(**response_dict)
             recovered_from_disconnect = True

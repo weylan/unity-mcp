@@ -945,8 +945,9 @@ class PluginHub(WebSocketEndpoint):
             raise InstanceSelectionRequiredError()
 
         if session_id is None:
-            logger.warning(
-                "No Unity plugin reconnected within %.2fs (instance=%s)",
+            logger.info(
+                "[GuardedNotice] No Unity plugin reconnected within %.2fs (instance=%s). "
+                "This is a lifecycle timeout; the caller receives a clear NoUnitySessionError.",
                 max_wait_s,
                 unity_instance or "default",
             )

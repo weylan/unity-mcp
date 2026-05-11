@@ -223,10 +223,10 @@ namespace MCPForUnity.Editor.Tools
                         namespaceName
                     );
                 case "read":
-                    McpLog.Warn("manage_script.read is deprecated; prefer resources/read. Serving read for backward compatibility.");
+                    McpLog.Info("[GuardedNotice] manage_script.read is deprecated; prefer resources/read. Serving read for backward compatibility.");
                     return ReadScript(fullPath, relativePath);
                 case "update":
-                    McpLog.Warn("manage_script.update is deprecated; prefer apply_text_edits. Serving update for backward compatibility.");
+                    McpLog.Info("[GuardedNotice] manage_script.update is deprecated; prefer apply_text_edits. Serving update for backward compatibility.");
                     return UpdateScript(fullPath, relativePath, name, contents);
                 case "delete":
                     return DeleteScript(fullPath, relativePath);
@@ -275,7 +275,7 @@ namespace MCPForUnity.Editor.Tools
                                    : new ErrorResponse("Validation failed.", result);
                     }
                 case "edit":
-                    McpLog.Warn("manage_script.edit is deprecated; prefer apply_text_edits. Serving structured edit for backward compatibility.");
+                    McpLog.Info("[GuardedNotice] manage_script.edit is deprecated; prefer apply_text_edits. Serving structured edit for backward compatibility.");
                     var structEdits = @params["edits"] as JArray;
                     var options = @params["options"] as JObject;
                     return EditScript(fullPath, relativePath, name, structEdits, options);

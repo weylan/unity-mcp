@@ -224,12 +224,17 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
                                     ", ".join(sync_result.get("disabled_groups", [])),
                                 )
                             else:
-                                # Unsupported command = old Unity package; just debug-log
-                                log_fn = logger.debug if sync_result.get("unsupported") else logger.warning
-                                log_fn(
-                                    "Stdio startup: could not sync tool visibility: %s",
-                                    sync_result.get("error", "unknown"),
-                                )
+                                if sync_result.get("unsupported"):
+                                    logger.debug(
+                                        "Stdio startup: could not sync tool visibility: %s",
+                                        sync_result.get("error", "unknown"),
+                                    )
+                                else:
+                                    logger.info(
+                                        "[GuardedNotice] Stdio startup could not sync tool visibility yet: %s. "
+                                        "This is a startup/lifecycle notice; visibility can sync after Unity reconnects.",
+                                        sync_result.get("error", "unknown"),
+                                    )
                         except Exception as sync_exc:
                             logger.debug(
                                 "Stdio startup: tool visibility sync failed: %s", sync_exc)
@@ -244,13 +249,23 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
                         }
                     )).start()
                 except Exception as e:
-                    logger.warning(
-                        f"Could not connect to default Unity instance: {e}")
+                    logger.info(
+                        "[GuardedNotice] Could not connect to default Unity instance on startup: %s. "
+                        "Unity may still be launching or reconnecting.",
+                        e,
+                    )
             else:
-                logger.warning("No Unity instances found on startup")
+                logger.info(
+                    "[GuardedNotice] No Unity instances found on startup. "
+                    "This is expected when the MCP server starts before Unity connects."
+                )
 
     except ConnectionError as e:
-        logger.warning(f"Could not connect to Unity on startup: {e}")
+        logger.info(
+            "[GuardedNotice] Could not connect to Unity on startup: %s. "
+            "Unity may still be launching or reconnecting.",
+            e,
+        )
 
         # Record connection failure (deferred)
         _err_msg = str(e)[:200]

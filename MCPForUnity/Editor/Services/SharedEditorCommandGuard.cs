@@ -102,9 +102,9 @@ namespace MCPForUnity.Editor.Services
                 return;
             }
 
-            string mode = decision.WarnOnly ? "warn" : "block";
-            McpLog.Warn(
-                $"SharedEditorCommandGuard {mode}: tool={decision.Tool}, action={decision.Action ?? "(none)"}, reason={decision.Reason}");
+            string mode = decision.WarnOnly ? "warn-only" : "blocked";
+            McpLog.Info(
+                $"[GuardedNotice] SharedEditorCommandGuard {mode}: tool={decision.Tool}, action={decision.Action ?? "(none)"}, reason={decision.Reason}. This is a protective control-flow response, not a Unity warning.");
 
             McpLogRecord.Log(
                 decision.Tool,

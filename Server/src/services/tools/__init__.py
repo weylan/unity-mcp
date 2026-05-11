@@ -261,8 +261,10 @@ async def sync_tool_visibility_from_unity(
         }
 
     except Exception as exc:
-        logger.warning(
-            "Failed to sync tool visibility from Unity: %s", exc,
+        logger.info(
+            "[GuardedNotice] Failed to sync tool visibility from Unity: %s. "
+            "This can happen during startup or domain reload; defaults remain usable until Unity reconnects.",
+            exc,
         )
         return {"error": str(exc)}
 

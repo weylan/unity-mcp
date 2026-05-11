@@ -299,7 +299,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
 
             if (!string.Equals(connectedEndpoint.Host, originalEndpoint.Host, StringComparison.OrdinalIgnoreCase))
             {
-                McpLog.Warn($"[WebSocket] Connected via fallback host '{connectedEndpoint.Host}' after '{originalEndpoint.Host}' failed.");
+                McpLog.Info($"[GuardedNotice] [WebSocket] Connected via fallback host '{connectedEndpoint.Host}' after '{originalEndpoint.Host}' failed.");
                 _endpointUri = connectedEndpoint;
             }
 
@@ -578,7 +578,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
         {
             if (!IsConnected || _lifecycleCts == null)
             {
-                McpLog.Warn("[WebSocket] Cannot reregister tools: not connected");
+                McpLog.Info("[GuardedNotice] [WebSocket] Cannot reregister tools because the transport is not connected. It will register after reconnect.");
                 return;
             }
 
@@ -589,7 +589,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
             }
             catch (System.OperationCanceledException)
             {
-                McpLog.Warn("[WebSocket] Tool reregistration cancelled");
+                McpLog.Info("[GuardedNotice] [WebSocket] Tool reregistration cancelled.");
             }
             catch (System.Exception ex)
             {
@@ -760,7 +760,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
 
             _isConnected = false;
             _state = _state.WithError(reason ?? "Connection closed");
-            McpLog.Warn($"[WebSocket] Connection closed: {reason}");
+            McpLog.Info($"[GuardedNotice] [WebSocket] Connection closed: {reason}. Reconnect will be attempted automatically.");
 
             await StopConnectionLoopsAsync(awaitTasks: false).ConfigureAwait(false);
 
@@ -797,7 +797,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
 
                 // Schedule exhausted — keep retrying every 30 s indefinitely so a transient
                 // server outage longer than ~49 s doesn't leave the plugin permanently dead.
-                McpLog.Warn($"[WebSocket] Initial reconnect schedule exhausted. Retrying every {ReconnectTailInterval.TotalSeconds}s until cancelled.");
+                McpLog.Info($"[GuardedNotice] [WebSocket] Initial reconnect schedule exhausted. Retrying every {ReconnectTailInterval.TotalSeconds}s until cancelled.");
                 _state = _state.WithError($"Server unreachable – retrying every {ReconnectTailInterval.TotalSeconds} s");
                 while (!token.IsCancellationRequested)
                 {
@@ -831,12 +831,12 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
             string host = httpUri.Host;
             if (host == "0.0.0.0")
             {
-                McpLog.Warn($"[WebSocket] Base URL host '{host}' is bind-only; using '127.0.0.1' for client connection.");
+                McpLog.Info($"[GuardedNotice] [WebSocket] Base URL host '{host}' is bind-only; using '127.0.0.1' for client connection.");
                 host = "127.0.0.1";
             }
             else if (host == "::")
             {
-                McpLog.Warn($"[WebSocket] Base URL host '{host}' is bind-only; using '::1' for client connection.");
+                McpLog.Info($"[GuardedNotice] [WebSocket] Base URL host '{host}' is bind-only; using '::1' for client connection.");
                 host = "::1";
             }
 

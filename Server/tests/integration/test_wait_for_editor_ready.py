@@ -121,6 +121,30 @@ def test_is_reloading_rejection_false_on_non_dict():
     assert is_reloading_rejection(None) is False
 
 
+# --- is_protective_rejection tests ---
+
+from services.tools.refresh_unity import is_protective_rejection
+
+
+def test_is_protective_rejection_true_for_shared_editor_guard():
+    resp = {
+        "success": False,
+        "error": "shared_editor_guard_blocked",
+        "data": {"reason": "refresh_unity wait_for_ready can monopolize shared editors"},
+    }
+    assert is_protective_rejection(resp) is True
+
+
+def test_is_protective_rejection_true_for_tests_running():
+    resp = {"success": False, "error": "tests_running", "data": {"reason": "tests_running"}}
+    assert is_protective_rejection(resp) is True
+
+
+def test_is_protective_rejection_false_for_nonretry_failure():
+    resp = {"success": False, "error": "refresh_failed: disk full"}
+    assert is_protective_rejection(resp) is False
+
+
 # --- is_connection_lost_after_send tests ---
 
 from services.tools.refresh_unity import is_connection_lost_after_send

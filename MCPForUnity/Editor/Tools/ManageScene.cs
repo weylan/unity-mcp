@@ -577,7 +577,7 @@ namespace MCPForUnity.Editor.Tools
                 // Batch mode warning
                 if (Application.isBatchMode)
                 {
-                    McpLog.Warn("[ManageScene] Screenshot capture in batch mode uses camera-based fallback. Results may vary.");
+                    McpLog.Info("[GuardedNotice] [ManageScene] Screenshot capture in batch mode uses camera-based fallback. Results may vary.");
                 }
 
                 // Resolve camera target
@@ -693,7 +693,7 @@ namespace MCPForUnity.Editor.Tools
                 }
                 if (!screenCaptureAvailable)
                 {
-                    McpLog.Warn("[ManageScene] Screen Capture module not enabled. Using camera-based fallback.");
+                    McpLog.Info("[GuardedNotice] [ManageScene] Screen Capture module not enabled. Using camera-based fallback.");
                 }
 #else
                 if (!hasCameraFallback)

@@ -227,7 +227,7 @@ namespace MCPForUnity.Editor.Services
                             long staleCutoffMs = 5 * 60 * 1000; // 5 minutes
                             if (now - currentJob.LastUpdateUnixMs > staleCutoffMs)
                             {
-                                McpLog.Warn($"[TestJobManager] Clearing stale job {_currentJobId} (last update {(now - currentJob.LastUpdateUnixMs) / 1000}s ago)");
+                                McpLog.Info($"[GuardedNotice] [TestJobManager] Clearing stale job {_currentJobId} after domain reload/orphan detection (last update {(now - currentJob.LastUpdateUnixMs) / 1000}s ago).");
                                 currentJob.Status = TestJobStatus.Failed;
                                 currentJob.Error = "Job orphaned after domain reload";
                                 currentJob.FinishedUnixMs = now;
@@ -685,4 +685,3 @@ namespace MCPForUnity.Editor.Services
         }
     }
 }
-

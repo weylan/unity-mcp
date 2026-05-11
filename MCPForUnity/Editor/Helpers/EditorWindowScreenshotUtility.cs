@@ -355,7 +355,7 @@ namespace MCPForUnity.Editor.Helpers
         {
             if (superSize > 1)
             {
-                McpLog.Warn("[EditorWindowScreenshotUtility] Scene View capture ignores superSize and uses the displayed viewport resolution.");
+                McpLog.Info("[GuardedNotice] [EditorWindowScreenshotUtility] Scene View capture ignores superSize and uses the displayed viewport resolution.");
                 return 1;
             }
 

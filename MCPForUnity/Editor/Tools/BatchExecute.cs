@@ -57,7 +57,7 @@ namespace MCPForUnity.Editor.Tools
 
             if (parallelRequested)
             {
-                McpLog.Warn("batch_execute parallel mode requested, but commands will run sequentially on the main thread for safety.");
+                McpLog.Info("[GuardedNotice] batch_execute parallel mode requested; running sequentially on the Unity main thread for safety.");
             }
 
             var commandResults = new List<object>(commandsToken.Count);

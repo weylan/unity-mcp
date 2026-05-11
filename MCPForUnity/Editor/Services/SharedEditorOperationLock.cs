@@ -314,7 +314,7 @@ namespace MCPForUnity.Editor.Services
         private static void LogBusy(string requester, string requestedReason, LockState holder)
         {
             var expiresIn = Math.Max(0, (long)(holder.ExpiresAtUtc - DateTime.UtcNow).TotalMilliseconds);
-            McpLog.Warn($"[EditorLock] BUSY requester='{requester}' reason='{requestedReason}' → holder='{holder.HolderHint}' holder_reason='{holder.Reason}' expires_in={expiresIn}ms");
+            McpLog.Info($"[GuardedNotice] [EditorLock] BUSY requester='{requester}' reason='{requestedReason}' → holder='{holder.HolderHint}' holder_reason='{holder.Reason}' expires_in={expiresIn}ms. This is expected lock contention; retry after the holder releases.");
             LogRecord(holder, "BUSY");
         }
 
