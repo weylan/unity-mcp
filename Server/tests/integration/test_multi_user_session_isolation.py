@@ -112,7 +112,7 @@ class TestInstanceListResourceIsolation:
         await _setup_two_user_registry()
 
         from services.resources.unity_instances import unity_instances
-        from tests.integration.test_helpers import DummyContext
+        from .test_helpers import DummyContext
 
         ctx = DummyContext()
         await ctx.set_state("user_id", "userA")
@@ -136,7 +136,7 @@ class TestSetActiveInstanceIsolation:
 
         from services.tools.set_active_instance import set_active_instance
         from transport.unity_instance_middleware import UnityInstanceMiddleware
-        from tests.integration.test_helpers import DummyContext
+        from .test_helpers import DummyContext
 
         middleware = UnityInstanceMiddleware()
         monkeypatch.setattr(
@@ -160,7 +160,7 @@ class TestSetActiveInstanceIsolation:
 
         from services.tools.set_active_instance import set_active_instance
         from transport.unity_instance_middleware import UnityInstanceMiddleware
-        from tests.integration.test_helpers import DummyContext
+        from .test_helpers import DummyContext
 
         middleware = UnityInstanceMiddleware()
         monkeypatch.setattr(

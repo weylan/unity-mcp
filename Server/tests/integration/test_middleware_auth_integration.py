@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from core.config import config
-from tests.integration.test_helpers import DummyContext
+from .test_helpers import DummyContext
 
 
 class TestMiddlewareAuthEnforcement:
