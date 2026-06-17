@@ -300,7 +300,7 @@ function mergeLatest(opts) {
   ensureRemote(opts);
 
   if (opts.fetch) {
-    runGit(["fetch", opts.upstreamRemote, "--tags"], opts);
+    runGit(["fetch", opts.upstreamRemote, opts.upstreamBranch, "--tags"], opts);
     runGit(["fetch", opts.originRemote, "--tags"], opts);
   }
 
