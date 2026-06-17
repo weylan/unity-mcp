@@ -651,14 +651,11 @@ namespace MCPForUnity.Editor.Windows.Components.Connection
                     if (stopped)
                     {
                         McpLog.Info("Server stopped");
+                        HttpAutoStartHandler.ClearExternalConnectFailureCooldown();
                     }
                     else
                     {
                         McpLog.Warn("Failed to stop HTTP server or no server was running");
-                    }
-                    else
-                    {
-                        HttpAutoStartHandler.ClearExternalConnectFailureCooldown();
                     }
                 }
                 else
