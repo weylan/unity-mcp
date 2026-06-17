@@ -42,6 +42,8 @@ class RegisterMessage(BaseModel):
 class RegisterToolsMessage(BaseModel):
     type: str = "register_tools"
     tools: list[ToolDefinitionModel]
+    tool_states: list[ToolDefinitionModel] | None = None
+    tool_visibility_version: int | None = None
 
 
 class PongMessage(BaseModel):

@@ -506,7 +506,11 @@ class PluginHub(WebSocketEndpoint):
 
         # Sync server-level FastMCP visibility so new MCP client sessions
         # (e.g. new Claude Code conversations) see the correct tool set.
-        self._sync_server_tool_visibility(payload.tools)
+        self._sync_server_tool_visibility(
+            payload.tool_states
+            if payload.tool_states is not None
+            else payload.tools
+        )
 
         # Notify any already-connected MCP clients (e.g. CC over stdio) that
         # the tool list has changed so they re-fetch.
@@ -531,20 +535,7 @@ class PluginHub(WebSocketEndpoint):
 
     @classmethod
     def _sync_server_tool_visibility(cls, registered_tools: list) -> None:
-        """Sync FastMCP server-level tool group visibility to match Unity's state.
-
-        When Unity sends ``register_tools``, some groups may have been toggled
-        on/off via the Unity Editor GUI.  We mirror that state at the FastMCP
-        server level so that **new** MCP client sessions (e.g. a fresh Claude
-        Code conversation) see the correct tool set without requiring
-        ``manage_tools`` activation.
-
-        The startup ``register_all_tools()`` disables non-default groups via
-        ``mcp.disable(tags=...)``.  Here we append ``mcp.enable(tags=...)``
-        transforms for groups that Unity has enabled, effectively overriding
-        the startup defaults.  FastMCP processes transforms in order so later
-        ``enable`` calls override earlier ``disable`` calls.
-        """
+        """Sync FastMCP server-level tool visibility to match Unity's state."""
         mcp = cls._mcp
         if mcp is None:
             return
@@ -553,10 +544,16 @@ class PluginHub(WebSocketEndpoint):
             from services.registry import get_group_tool_names, TOOL_GROUPS
 
             registered_names: set[str] = set()
+            tool_states: dict[str, bool] = {}
+            has_per_tool_state = False
             for tool in registered_tools:
                 name = getattr(tool, "name", None) if not isinstance(tool, dict) else tool.get("name")
                 if isinstance(name, str) and name:
                     registered_names.add(name)
+                    enabled = tool.get("enabled") if isinstance(tool, dict) else getattr(tool, "enabled", None)
+                    if isinstance(enabled, bool):
+                        tool_states[name] = enabled
+                        has_per_tool_state = True
 
             group_tools = get_group_tool_names()
 
@@ -570,10 +567,17 @@ class PluginHub(WebSocketEndpoint):
 
             enabled_groups: list[str] = []
             disabled_groups: list[str] = []
+            enabled_tools: list[str] = []
+            disabled_tools: list[str] = []
+            visible_names = (
+                {name for name, enabled in tool_states.items() if enabled}
+                if has_per_tool_state
+                else registered_names
+            )
 
             for group_name in sorted(TOOL_GROUPS.keys()):
                 tool_names = group_tools.get(group_name, [])
-                has_any_registered = any(n in registered_names for n in tool_names)
+                has_any_registered = any(n in visible_names for n in tool_names)
 
                 if has_any_registered:
                     # Override the startup disable with an enable.
@@ -586,12 +590,26 @@ class PluginHub(WebSocketEndpoint):
                     mcp.disable(tags={tag}, components={"tool"})
                     disabled_groups.append(group_name)
 
+            if has_per_tool_state:
+                for tool_name in sorted(tool_states.keys()):
+                    tag = f"tool:{tool_name}"
+                    if tool_states[tool_name]:
+                        mcp.enable(tags={tag}, components={"tool"})
+                        enabled_tools.append(tool_name)
+                    else:
+                        mcp.disable(tags={tag}, components={"tool"})
+                        disabled_tools.append(tool_name)
+
             if enabled_groups or disabled_groups:
                 logger.info(
                     "Server-level tool visibility synced from Unity: "
-                    "enabled=[%s], disabled=[%s], total_transforms=%d, unity_start=%d",
+                    "enabled_groups=[%s], disabled_groups=[%s], "
+                    "enabled_tools=[%s], disabled_tools=[%s], "
+                    "total_transforms=%d, unity_start=%d",
                     ", ".join(enabled_groups),
                     ", ".join(disabled_groups),
+                    ", ".join(enabled_tools),
+                    ", ".join(disabled_tools),
                     len(mcp._transforms),
                     cls._unity_transform_start or 0,
                 )
