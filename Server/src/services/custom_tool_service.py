@@ -356,11 +356,15 @@ class CustomToolService:
         handler = self._build_global_tool_handler(definition)
         wrapped = log_execution(definition.name, "Tool")(handler)
         wrapped = telemetry_tool(definition.name)(wrapped)
+        tags = {f"tool:{definition.name}"}
+        if definition.group:
+            tags.add(f"group:{definition.group}")
 
         try:
             wrapped = self._mcp.tool(
                 name=definition.name,
                 description=definition.description,
+                tags=tags,
             )(wrapped)
         except Exception as exc:  # pragma: no cover - defensive against tool conflicts
             logger.warning(

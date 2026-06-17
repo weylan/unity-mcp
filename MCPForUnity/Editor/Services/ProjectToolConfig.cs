@@ -147,16 +147,9 @@ namespace MCPForUnity.Editor.Services
                 Directory.CreateDirectory(directory);
             }
 
-            string tempPath = $"{pathToWrite}.{Guid.NewGuid():N}.tmp";
-            File.WriteAllText(tempPath, root.ToString(Formatting.Indented) + Environment.NewLine);
-            if (File.Exists(pathToWrite))
-            {
-                File.Replace(tempPath, pathToWrite, null);
-            }
-            else
-            {
-                File.Move(tempPath, pathToWrite);
-            }
+            McpConfigurationHelper.WriteAtomicFile(
+                pathToWrite,
+                root.ToString(Formatting.Indented) + Environment.NewLine);
         }
 
         public string GetSource(string toolName)

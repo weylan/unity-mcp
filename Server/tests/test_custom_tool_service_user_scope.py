@@ -10,7 +10,18 @@ from services.tools.execute_custom_tool import execute_custom_tool
 
 
 class _DummyMcp:
+    def __init__(self):
+        self.tool_calls = []
+
     def custom_route(self, _path, methods=None):  # noqa: ARG002
+        def _decorator(fn):
+            return fn
+
+        return _decorator
+
+    def tool(self, **kwargs):
+        self.tool_calls.append(kwargs)
+
         def _decorator(fn):
             return fn
 
@@ -104,3 +115,13 @@ async def test_custom_tools_resource_threads_user_id_from_context(monkeypatch):
             await get_custom_tools(ctx)
 
     service.list_registered_tools.assert_awaited_once_with("project-hash", user_id="user-1")
+
+
+def test_global_custom_tool_registers_visibility_tags():
+    mcp = _DummyMcp()
+    service = CustomToolService(mcp)
+    definition = ToolDefinitionModel(name="my_tool", description="My tool", group="ui")
+
+    service.register_global_tools([definition])
+
+    assert mcp.tool_calls[-1]["tags"] == {"tool:my_tool", "group:ui"}
