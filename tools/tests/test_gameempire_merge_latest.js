@@ -15,6 +15,7 @@ const {
   serverPackageSourceForTag,
   readServerPackageSource,
   updateServerPackageSource,
+  mergeLatest,
 } = require("../gameempire_merge_latest.js");
 
 function git(cwd, args) {
@@ -122,6 +123,45 @@ withTempGitRepo((cwd) => {
   assert.ok(immutableTag);
   assert.strictEqual(latest, head);
   assert.strictEqual(readServerPackageSource({ cwd, ...DEFAULTS }), serverPackageSourceForTag(immutableTag, DEFAULTS));
+});
+
+withTempGitRepo((cwd) => {
+  const opts = { cwd, ...DEFAULTS, fetch: false, push: false, dryRun: false, quiet: true };
+  git(cwd, ["remote", "add", opts.upstreamRemote, "."]);
+  git(cwd, ["update-ref", `refs/remotes/${opts.upstreamRemote}/${opts.upstreamBranch}`, "HEAD"]);
+
+  const beforeHead = git(cwd, ["rev-parse", "HEAD"]);
+  const beforeSource = readServerPackageSource(opts);
+
+  const merged = silenceConsole(() => mergeLatest(opts));
+
+  assert.strictEqual(merged.skipped, true);
+  assert.strictEqual(merged.reason, "up-to-date");
+  assert.strictEqual(git(cwd, ["rev-parse", "HEAD"]), beforeHead);
+  assert.strictEqual(readServerPackageSource(opts), beforeSource);
+  assert.strictEqual(git(cwd, ["tag", "--list", `${DEFAULTS.tagPrefix}*`]), "");
+  assert.strictEqual(git(cwd, ["tag", "--list", DEFAULTS.latestTag]), "");
+});
+
+withTempGitRepo((cwd) => {
+  const opts = { cwd, ...DEFAULTS, fetch: false, push: false, dryRun: true, quiet: true };
+  git(cwd, ["remote", "add", opts.upstreamRemote, "."]);
+  git(cwd, ["update-ref", `refs/remotes/${opts.upstreamRemote}/${opts.upstreamBranch}`, "HEAD"]);
+
+  const originalLog = console.log;
+  const lines = [];
+  try {
+    console.log = (message) => lines.push(String(message));
+    const merged = mergeLatest(opts);
+    assert.strictEqual(merged.skipped, true);
+    assert.strictEqual(merged.reason, "up-to-date");
+  } finally {
+    console.log = originalLog;
+  }
+
+  assert.ok(lines.some((line) => line.includes("merge skipped")));
+  assert.ok(!lines.some((line) => line.includes("Unity MCP merge complete")));
+  assert.ok(!lines.some((line) => line.includes("DRY-RUN update")));
 });
 
 console.log("ok - gameempire merge updates mcpServerPackageSource to immutable tag");

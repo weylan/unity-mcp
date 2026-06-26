@@ -156,6 +156,21 @@ function checkoutTargetBranch(opts) {
   throw new Error(`Target branch not found locally or at ${opts.originRemote}/${opts.targetBranch}: ${opts.targetBranch}`);
 }
 
+function mergeSourceRef(opts) {
+  return `${opts.upstreamRemote}/${opts.upstreamBranch}`;
+}
+
+function isAncestor(ancestor, descendant, opts) {
+  const result = spawnSync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+    cwd: opts.cwd,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  const detail = (result.stderr || "").toString().trim();
+  throw new Error(`git merge-base --is-ancestor ${ancestor} ${descendant} failed${detail ? `: ${detail}` : ""}`);
+}
+
 function parseImmutableTag(tag, prefix) {
   if (!tag.startsWith(prefix)) return null;
   const suffix = tag.slice(prefix.length);
@@ -305,7 +320,16 @@ function mergeLatest(opts) {
   }
 
   checkoutTargetBranch(opts);
-  runGit(["merge", "--no-edit", `${opts.upstreamRemote}/${opts.upstreamBranch}`], opts);
+  const sourceRef = mergeSourceRef(opts);
+  if (isAncestor(sourceRef, "HEAD", opts)) {
+    const head = opts.dryRun ? "<dry-run>" : gitOutput(["rev-parse", "HEAD"], opts);
+
+    console.log(
+      `Unity MCP merge skipped: ${sourceRef} is already included in ${opts.targetBranch}.`
+    );
+    return { skipped: true, reason: "up-to-date", head };
+  }
+  runGit(["merge", "--no-edit", sourceRef], opts);
 
   return finalizeRelease(opts, "merge");
 }
