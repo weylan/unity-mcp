@@ -1,5 +1,8 @@
+import pytest
+
 from transport.plugin_hub import PluginHub
-from services.registry import clear_tool_registry, mcp_for_unity_tool
+from services.registry import mcp_for_unity_tool
+from services.registry import tool_registry as registry_mod
 
 
 class FakeMcp:
@@ -16,10 +19,11 @@ class FakeMcp:
         self._transforms.append(("disable", tuple(sorted(tags))))
 
 
-def setup_function():
+@pytest.fixture(autouse=True)
+def isolated_tool_registry(monkeypatch):
     PluginHub._mcp = None
     PluginHub._unity_transform_start = None
-    clear_tool_registry()
+    monkeypatch.setattr(registry_mod, "_tool_registry", [])
 
     @mcp_for_unity_tool(name="core_enabled_tool", group="core")
     async def _core_enabled_tool():
@@ -28,6 +32,11 @@ def setup_function():
     @mcp_for_unity_tool(name="core_disabled_tool", group="core")
     async def _core_disabled_tool():
         return None
+
+    yield
+
+    PluginHub._mcp = None
+    PluginHub._unity_transform_start = None
 
 
 def test_per_tool_visibility_disables_one_core_tool_while_enabling_another():
