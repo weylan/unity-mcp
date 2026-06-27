@@ -227,6 +227,12 @@ namespace MCPForUnityTests.Editor.Services
             public bool StopManagedLocalHttpServer() => true;
             public bool IsLocalHttpServerRunning() => LocalHttpServerReachable;
 
+            // These IServerManagementService members post-date this fake; the HttpAutoStart tests
+            // do not exercise them, so inert defaults are sufficient to satisfy the interface.
+            public string GetLocalHttpServerLaunchLogPath() => null;
+            public bool IsManagedServerLaunchProcessAlive() => false;
+            public void LogLocalHttpServerLaunchFailure() { }
+
             public bool IsLocalHttpServerReachable()
             {
                 IsLocalHttpServerReachableCalls++;
