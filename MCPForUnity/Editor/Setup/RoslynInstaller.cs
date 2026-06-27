@@ -10,7 +10,10 @@ namespace MCPForUnity.Editor.Setup
 {
     public static class RoslynInstaller
     {
-        private const string PluginsRelPath = "Plugins/Roslyn";
+        // Editor-only location: the "Editor" ancestor folder keeps these compiler DLLs out of player
+        // (Windows/macOS/WebGL) builds — execute_code / Roslyn are Editor-only. (Previously
+        // "Plugins/Roslyn", which Unity imports as an all-platforms managed plugin and would ship.)
+        private const string PluginsRelPath = "Plugins/Editor/Roslyn";
 
         private static readonly (string packageId, string version, string dllPath, string dllName)[] NuGetEntries =
         {

@@ -31,11 +31,47 @@ namespace MCPForUnity.Editor.Tools
         private static readonly List<HistoryEntry> _history = new List<HistoryEntry>();
         private static string[] _cachedAssemblyPaths;
 
+        // Compiled-assembly cache: an identical wrapped source within a domain reuses its compiled
+        // Assembly instead of recompiling (Roslyn in-memory, or CodeDom shelling out to mcs). Keyed
+        // by resolved compiler + assembly-reference fingerprint + SHA-256 of the wrapped source.
+        // Bookkeeping is guarded by _cacheLock: the production transport path is single-threaded
+        // (TransportCommandDispatcher marshals every command to the Unity main thread), but
+        // HandleCommand is public and may be invoked by tests or future non-transport callers.
+        // Invalidated on every domain reload because cached assemblies are compiled against
+        // MetadataReference.CreateFromFile(_cachedAssemblyPaths), which a project recompile rewrites.
+        private static readonly Dictionary<string, (Assembly assembly, string usedCompiler)> _assemblyCache
+            = new Dictionary<string, (Assembly, string)>();
+        private static readonly object _cacheLock = new object();
+        private static string _assemblyPathsFingerprint;
+        private static long _compileCount;
+
+        /// <summary>Count of real compilations performed (cache misses). Test seam.</summary>
+        internal static long CompileCount => System.Threading.Interlocked.Read(ref _compileCount);
+
         [UnityEditor.InitializeOnLoadMethod]
         private static void OnDomainReload()
         {
             _cachedAssemblyPaths = null;
             RoslynCompiler.ResetCache();
+            ClearCompileCache();
+        }
+
+        private static void ClearCompileCache()
+        {
+            lock (_cacheLock)
+            {
+                _assemblyCache.Clear();
+                _assemblyPathsFingerprint = null;
+            }
+        }
+
+        /// <summary>Test seam: clear the compile cache and reset compiler availability + assembly
+        /// paths, mirroring a domain reload so tests can assert recompilation deterministically.</summary>
+        internal static void ClearCompileCacheForTests()
+        {
+            _cachedAssemblyPaths = null;
+            RoslynCompiler.ResetCache();
+            ClearCompileCache();
         }
 
         private static readonly HashSet<string> _blockedPatterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -181,6 +217,28 @@ namespace MCPForUnity.Editor.Tools
             string wrappedSource = WrapUserCode(code);
             string[] assemblyPaths = GetAssemblyPaths();
 
+            // Resolve "auto"/empty/unknown to the backend the switch below will actually use, so the
+            // cache key reflects the real compiler. Availability is stable within a domain (reset on
+            // domain reload, which also clears the cache), keeping it consistent for a cache entry.
+            string effectiveCompiler = (compiler == "roslyn" || compiler == "codedom")
+                ? compiler
+                : (RoslynCompiler.IsAvailable ? "roslyn" : "codedom");
+            string cacheKey = effectiveCompiler + "|" + GetAssemblyPathsFingerprint() + "|" + Sha256Hex(wrappedSource);
+
+            lock (_cacheLock)
+            {
+                if (_assemblyCache.TryGetValue(cacheKey, out var cached))
+                {
+                    // Re-invoke the cached assembly's Execute() against current Unity state — intended:
+                    // repeated probes re-run. Note the snippet's compiler-generated statics persist
+                    // across cache hits (fresh-compile semantics only on first call / after a reload).
+                    return InvokeCompiled(cached.assembly, cached.usedCompiler);
+                }
+            }
+
+            // Cache miss → real compilation.
+            System.Threading.Interlocked.Increment(ref _compileCount);
+
             Assembly compiled;
             string usedCompiler;
 
@@ -218,6 +276,11 @@ namespace MCPForUnity.Editor.Tools
                         usedCompiler = "codedom";
                     }
                     break;
+            }
+
+            lock (_cacheLock)
+            {
+                _assemblyCache[cacheKey] = (compiled, usedCompiler);
             }
 
             return InvokeCompiled(compiled, usedCompiler);
@@ -378,6 +441,33 @@ namespace MCPForUnity.Editor.Tools
             if (_cachedAssemblyPaths == null)
                 _cachedAssemblyPaths = ResolveAssemblyPaths();
             return _cachedAssemblyPaths;
+        }
+
+        // Fingerprint of the reference set, folded into the cache key so a cached assembly is never
+        // reused against a different set of assembly references. Computed once per domain (reset
+        // alongside _cachedAssemblyPaths on domain reload / ClearCompileCacheForTests).
+        private static string GetAssemblyPathsFingerprint()
+        {
+            if (_assemblyPathsFingerprint == null)
+            {
+                var paths = GetAssemblyPaths();
+                var sorted = (string[])paths.Clone();
+                Array.Sort(sorted, StringComparer.Ordinal);
+                _assemblyPathsFingerprint = Sha256Hex(string.Join("\n", sorted));
+            }
+            return _assemblyPathsFingerprint;
+        }
+
+        private static string Sha256Hex(string s)
+        {
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            {
+                byte[] hash = sha.ComputeHash(Encoding.UTF8.GetBytes(s));
+                var sb = new StringBuilder(hash.Length * 2);
+                foreach (byte b in hash)
+                    sb.Append(b.ToString("x2"));
+                return sb.ToString();
+            }
         }
 
         private static string[] ResolveAssemblyPaths()

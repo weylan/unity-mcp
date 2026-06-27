@@ -11,6 +11,69 @@ namespace MCPForUnityTests.Editor.Tools
         public void SetUp()
         {
             ExecuteCode.HandleCommand(new JObject { ["action"] = "clear_history" });
+            // The compile cache persists across calls within a domain; clear it between tests so
+            // CompileCount deltas are deterministic and one test's cached snippet does not turn a
+            // later test's first call into a cache hit.
+            ExecuteCode.ClearCompileCacheForTests();
+        }
+
+        // ──────────────────── Compile cache ────────────────────
+
+        [Test]
+        public void Execute_IdenticalCode_CompilesOnce()
+        {
+            long before = ExecuteCode.CompileCount;
+
+            var r1 = Execute("return 11 + 22;");
+            var r2 = Execute("return 11 + 22;");
+
+            Assert.IsTrue(r1.Value<bool>("success"), r1.ToString());
+            Assert.IsTrue(r2.Value<bool>("success"), r2.ToString());
+            Assert.AreEqual(33, r2["data"]["result"].Value<int>());
+            Assert.AreEqual(1, ExecuteCode.CompileCount - before,
+                "Identical source should compile once; the second call must hit the cache.");
+        }
+
+        [Test]
+        public void Execute_DifferentCode_CompilesEachTime()
+        {
+            long before = ExecuteCode.CompileCount;
+
+            Execute("return 101;");
+            Execute("return 202;");
+
+            Assert.AreEqual(2, ExecuteCode.CompileCount - before,
+                "Distinct sources must each trigger a compile (no false cache hit).");
+        }
+
+        [Test]
+        public void Execute_AfterCacheClear_Recompiles()
+        {
+            long before = ExecuteCode.CompileCount;
+
+            Execute("return 303;");
+            ExecuteCode.ClearCompileCacheForTests();
+            Execute("return 303;");
+
+            Assert.AreEqual(2, ExecuteCode.CompileCount - before,
+                "Clearing the cache (domain-reload equivalent) must force a recompile of the same source.");
+        }
+
+        [Test]
+        public void Execute_SafetyChecks_NotBypassedByCache()
+        {
+            // A method-group reference to a blocked API contains the blocked substring but is never
+            // invoked, so it is harmless to run with safety off — yet it still caches an assembly.
+            const string danger = "var d = (System.Action<string>)System.IO.File.Delete; return 1;";
+
+            var off = Execute(danger, safetyChecks: false);
+            Assert.IsTrue(off.Value<bool>("success"), off.ToString());
+
+            // Same source with safety on must still be blocked: the safety gate runs before the
+            // compile/cache lookup, so a cached assembly can never bypass it.
+            var on = Execute(danger, safetyChecks: true);
+            Assert.IsFalse(on.Value<bool>("success"), on.ToString());
+            StringAssert.Contains("Blocked", on.Value<string>("error") ?? on["error"]?.ToString() ?? string.Empty);
         }
 
         // ──────────────────── Execute: success cases ────────────────────
@@ -375,6 +438,16 @@ namespace MCPForUnityTests.Editor.Tools
             {
                 ["action"] = "execute",
                 ["code"] = code
+            }));
+        }
+
+        private static JObject Execute(string code, bool safetyChecks)
+        {
+            return ToJObject(ExecuteCode.HandleCommand(new JObject
+            {
+                ["action"] = "execute",
+                ["code"] = code,
+                ["safety_checks"] = safetyChecks
             }));
         }
 
