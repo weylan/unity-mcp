@@ -152,10 +152,18 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                 return false;
             }
 
-            // State is connected but session ID might be pending until 'registered' message
-            _state = TransportState.Connected(TransportDisplayName, sessionId: "pending", details: _endpointUri.ToString());
+            MarkConnectedAfterStart();
             _isConnected = true;
             return true;
+        }
+
+        private void MarkConnectedAfterStart()
+        {
+            // State is connected but session ID might be pending until 'registered' message.
+            // The receive loop can process 'registered' before StartAsync resumes, so do not
+            // overwrite an already assigned session ID with the pending marker.
+            string sessionId = string.IsNullOrEmpty(_sessionId) ? "pending" : _sessionId;
+            _state = TransportState.Connected(TransportDisplayName, sessionId: sessionId, details: _endpointUri.ToString());
         }
 
         public async Task StopAsync()

@@ -53,7 +53,10 @@ namespace MCPForUnityTests.Editor.Services
         }
 
         [Test]
-        public async Task TryConnectIfLocalServerReachableAsync_StartsSession_WhenExternalLocalServerIsReachable()
+        public void TryConnectIfLocalServerReachableAsync_StartsSession_WhenExternalLocalServerIsReachable()
+            => TryConnectIfLocalServerReachableAsync_StartsSession_WhenExternalLocalServerIsReachableAsync().GetAwaiter().GetResult();
+
+        private async Task TryConnectIfLocalServerReachableAsync_StartsSession_WhenExternalLocalServerIsReachableAsync()
         {
             var bridge = new FakeBridgeControlService { IsRunningValue = false, StartResult = true };
             var server = new FakeServerManagementService { LocalHttpServerReachable = true };
@@ -68,7 +71,10 @@ namespace MCPForUnityTests.Editor.Services
         }
 
         [Test]
-        public async Task TryConnectIfLocalServerReachableAsync_StartsSession_WhenAutoStartPreferenceIsUnset()
+        public void TryConnectIfLocalServerReachableAsync_StartsSession_WhenAutoStartPreferenceIsUnset()
+            => TryConnectIfLocalServerReachableAsync_StartsSession_WhenAutoStartPreferenceIsUnsetAsync().GetAwaiter().GetResult();
+
+        private async Task TryConnectIfLocalServerReachableAsync_StartsSession_WhenAutoStartPreferenceIsUnsetAsync()
         {
             EditorPrefs.DeleteKey(EditorPrefKeys.AutoStartOnLoad);
             var bridge = new FakeBridgeControlService { IsRunningValue = false, StartResult = true };
@@ -92,7 +98,10 @@ namespace MCPForUnityTests.Editor.Services
         }
 
         [Test]
-        public async Task TryConnectIfLocalServerReachableAsync_DoesNotStartSession_WhenAutoStartDisabled()
+        public void TryConnectIfLocalServerReachableAsync_DoesNotStartSession_WhenAutoStartDisabled()
+            => TryConnectIfLocalServerReachableAsync_DoesNotStartSession_WhenAutoStartDisabledAsync().GetAwaiter().GetResult();
+
+        private async Task TryConnectIfLocalServerReachableAsync_DoesNotStartSession_WhenAutoStartDisabledAsync()
         {
             EditorPrefs.SetBool(EditorPrefKeys.AutoStartOnLoad, false);
             var bridge = new FakeBridgeControlService { IsRunningValue = false, StartResult = true };
@@ -108,7 +117,10 @@ namespace MCPForUnityTests.Editor.Services
         }
 
         [Test]
-        public async Task TryConnectIfLocalServerReachableAsync_DoesNotStartSession_WhenManualStopIsSuppressed()
+        public void TryConnectIfLocalServerReachableAsync_DoesNotStartSession_WhenManualStopIsSuppressed()
+            => TryConnectIfLocalServerReachableAsync_DoesNotStartSession_WhenManualStopIsSuppressedAsync().GetAwaiter().GetResult();
+
+        private async Task TryConnectIfLocalServerReachableAsync_DoesNotStartSession_WhenManualStopIsSuppressedAsync()
         {
             var bridge = new FakeBridgeControlService { IsRunningValue = false, StartResult = true };
             var server = new FakeServerManagementService { LocalHttpServerReachable = false };
@@ -127,7 +139,10 @@ namespace MCPForUnityTests.Editor.Services
         }
 
         [Test]
-        public async Task TryConnectIfLocalServerReachableAsync_EntersCooldown_WhenStartFails()
+        public void TryConnectIfLocalServerReachableAsync_EntersCooldown_WhenStartFails()
+            => TryConnectIfLocalServerReachableAsync_EntersCooldown_WhenStartFailsAsync().GetAwaiter().GetResult();
+
+        private async Task TryConnectIfLocalServerReachableAsync_EntersCooldown_WhenStartFailsAsync()
         {
             var bridge = new FakeBridgeControlService { IsRunningValue = false, StartResult = false };
             var server = new FakeServerManagementService { LocalHttpServerReachable = true };
@@ -144,7 +159,10 @@ namespace MCPForUnityTests.Editor.Services
         }
 
         [Test]
-        public async Task TryConnectIfLocalServerReachableAsync_DoesNotProbe_WhenBridgeAlreadyRunning()
+        public void TryConnectIfLocalServerReachableAsync_DoesNotProbe_WhenBridgeAlreadyRunning()
+            => TryConnectIfLocalServerReachableAsync_DoesNotProbe_WhenBridgeAlreadyRunningAsync().GetAwaiter().GetResult();
+
+        private async Task TryConnectIfLocalServerReachableAsync_DoesNotProbe_WhenBridgeAlreadyRunningAsync()
         {
             var bridge = new FakeBridgeControlService { IsRunningValue = true, StartResult = true };
             var server = new FakeServerManagementService { LocalHttpServerReachable = true };
@@ -156,6 +174,37 @@ namespace MCPForUnityTests.Editor.Services
             Assert.IsFalse(connected);
             Assert.AreEqual(0, bridge.StartAsyncCalls);
             Assert.AreEqual(0, server.IsLocalHttpServerReachableCalls);
+        }
+
+        [Test]
+        public void TryConnectIfLocalServerReachableAsync_RestartsStaleRunningBridge()
+            => TryConnectIfLocalServerReachableAsync_RestartsStaleRunningBridgeAsync().GetAwaiter().GetResult();
+
+        private async Task TryConnectIfLocalServerReachableAsync_RestartsStaleRunningBridgeAsync()
+        {
+            var bridge = new FakeBridgeControlService
+            {
+                IsRunningValue = true,
+                StartResult = true,
+                VerifyResult = new BridgeVerificationResult
+                {
+                    Success = false,
+                    PingSucceeded = false,
+                    HandshakeValid = false,
+                    Message = "stale connection"
+                }
+            };
+            var server = new FakeServerManagementService { LocalHttpServerReachable = true };
+            MCPServiceLocator.Register<IBridgeControlService>(bridge);
+            MCPServiceLocator.Register<IServerManagementService>(server);
+
+            bool connected = await HttpAutoStartHandler.TryConnectIfLocalServerReachableAsync();
+
+            Assert.IsTrue(connected);
+            Assert.AreEqual(1, bridge.VerifyAsyncCalls);
+            Assert.AreEqual(1, bridge.StopAsyncCalls);
+            Assert.AreEqual(1, bridge.StartAsyncCalls);
+            Assert.AreEqual(1, server.IsLocalHttpServerReachableCalls);
         }
 
         private static void RestoreBool(string key, bool hadKey, bool value)
@@ -186,7 +235,10 @@ namespace MCPForUnityTests.Editor.Services
         {
             public bool IsRunningValue { get; set; }
             public bool StartResult { get; set; }
+            public BridgeVerificationResult VerifyResult { get; set; }
             public int StartAsyncCalls { get; private set; }
+            public int StopAsyncCalls { get; private set; }
+            public int VerifyAsyncCalls { get; private set; }
             public bool IsRunning => IsRunningValue;
             public int CurrentPort => 8080;
             public bool IsAutoConnectMode => false;
@@ -201,17 +253,19 @@ namespace MCPForUnityTests.Editor.Services
 
             public Task StopAsync()
             {
+                StopAsyncCalls++;
                 IsRunningValue = false;
                 return Task.CompletedTask;
             }
 
             public BridgeVerificationResult Verify(int port)
             {
-                return new BridgeVerificationResult { Success = IsRunningValue, PingSucceeded = IsRunningValue, HandshakeValid = true };
+                return VerifyResult ?? new BridgeVerificationResult { Success = IsRunningValue, PingSucceeded = IsRunningValue, HandshakeValid = true };
             }
 
             public Task<BridgeVerificationResult> VerifyAsync()
             {
+                VerifyAsyncCalls++;
                 return Task.FromResult(Verify(CurrentPort));
             }
         }

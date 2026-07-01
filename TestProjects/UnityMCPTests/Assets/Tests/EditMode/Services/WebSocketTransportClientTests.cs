@@ -12,6 +12,7 @@ namespace MCPForUnityTests.Editor.Services
     public class WebSocketTransportClientTests
     {
         private const string CandidateBuilderMethodName = "BuildConnectionCandidateUris";
+        private const string MarkConnectedAfterStartMethodName = "MarkConnectedAfterStart";
         private const string WebSocketTransportClientTypeName = "MCPForUnity.Editor.Services.Transport.Transports.WebSocketTransportClient";
         private static readonly MethodInfo BuildConnectionCandidateUrisMethod = ResolveCandidateBuilderMethod();
 
@@ -82,6 +83,38 @@ namespace MCPForUnityTests.Editor.Services
             }
         }
 
+        [Test]
+        public void MarkConnectedAfterStart_RegisteredBeforeStartResumes_PreservesAssignedSessionId()
+        {
+            // Arrange
+            var client = new WebSocketTransportClient();
+            SetPrivateField(client, "_endpointUri", new Uri("ws://127.0.0.1:8080/hub/plugin"));
+            SetPrivateField(client, "_sessionId", "session-from-register");
+
+            // Act
+            InvokeMarkConnectedAfterStart(client);
+
+            // Assert
+            Assert.IsTrue(client.State.IsConnected);
+            Assert.AreEqual("session-from-register", client.State.SessionId);
+            Assert.AreEqual("ws://127.0.0.1:8080/hub/plugin", client.State.Details);
+        }
+
+        [Test]
+        public void MarkConnectedAfterStart_NoRegisteredSession_UsesPendingMarker()
+        {
+            // Arrange
+            var client = new WebSocketTransportClient();
+            SetPrivateField(client, "_endpointUri", new Uri("ws://127.0.0.1:8080/hub/plugin"));
+
+            // Act
+            InvokeMarkConnectedAfterStart(client);
+
+            // Assert
+            Assert.IsTrue(client.State.IsConnected);
+            Assert.AreEqual("pending", client.State.SessionId);
+        }
+
         private static List<Uri> InvokeBuildConnectionCandidateUris(Uri endpoint)
         {
             if (BuildConnectionCandidateUrisMethod == null)
@@ -92,6 +125,22 @@ namespace MCPForUnityTests.Editor.Services
             Assert.IsNotNull(result);
             Assert.IsInstanceOf<List<Uri>>(result);
             return (List<Uri>)result;
+        }
+
+        private static void InvokeMarkConnectedAfterStart(WebSocketTransportClient client)
+        {
+            const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+            MethodInfo method = typeof(WebSocketTransportClient).GetMethod(MarkConnectedAfterStartMethodName, flags);
+            Assert.IsNotNull(method, $"Expected private method {MarkConnectedAfterStartMethodName} to exist.");
+            method.Invoke(client, Array.Empty<object>());
+        }
+
+        private static void SetPrivateField(WebSocketTransportClient client, string fieldName, object value)
+        {
+            const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+            FieldInfo field = typeof(WebSocketTransportClient).GetField(fieldName, flags);
+            Assert.IsNotNull(field, $"Expected private field {fieldName} to exist.");
+            field.SetValue(client, value);
         }
 
         private static MethodInfo ResolveCandidateBuilderMethod()

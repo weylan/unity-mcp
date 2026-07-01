@@ -126,7 +126,7 @@ namespace MCPForUnity.Editor.Services
                 return;
             }
 
-            if (!CanAttemptExternalLocalConnect(logPolicyError: false))
+            if (!CanAttemptExternalLocalConnect(logPolicyError: false, allowRunningBridge: true))
             {
                 return;
             }
@@ -188,12 +188,12 @@ namespace MCPForUnity.Editor.Services
             return SessionState.GetBool(ManualSessionStopSuppressedKey, false);
         }
 
-        private static bool CanAttemptExternalLocalConnect(bool logPolicyError)
+        private static bool CanAttemptExternalLocalConnect(bool logPolicyError, bool allowRunningBridge = false)
         {
             if (!IsAutoStartOnLoadEnabled()) return false;
             if (!EditorConfigurationCache.Instance.UseHttpTransport) return false;
             if (HttpEndpointUtility.IsRemoteScope()) return false;
-            if (MCPServiceLocator.Bridge.IsRunning) return false;
+            if (!allowRunningBridge && MCPServiceLocator.Bridge.IsRunning) return false;
             if (IsManualSessionStopSuppressed()) return false;
 
             string localBaseUrl = HttpEndpointUtility.GetLocalBaseUrl();
@@ -291,7 +291,13 @@ namespace MCPForUnity.Editor.Services
         {
             try
             {
-                if (!CanAttemptExternalLocalConnect(logPolicyError: true)) return false;
+                if (!CanAttemptExternalLocalConnect(logPolicyError: true, allowRunningBridge: true)) return false;
+
+                bool canStartBridge = await StopStaleBridgeIfNeededAsync();
+                if (!canStartBridge)
+                {
+                    return false;
+                }
 
                 bool reachable = MCPServiceLocator.Server.IsLocalHttpServerReachable();
                 if (!reachable)
@@ -318,6 +324,45 @@ namespace MCPForUnity.Editor.Services
                 McpLog.Debug($"[HTTP Auto-Start] Local server connect check failed: {ex.Message}");
                 return false;
             }
+        }
+
+        private static async Task<bool> StopStaleBridgeIfNeededAsync()
+        {
+            var bridge = MCPServiceLocator.Bridge;
+            if (!bridge.IsRunning)
+            {
+                return true;
+            }
+
+            BridgeVerificationResult verification = null;
+            try
+            {
+                verification = await bridge.VerifyAsync();
+            }
+            catch (Exception ex)
+            {
+                McpLog.Debug($"[HTTP Auto-Start] Existing bridge verification threw: {ex.Message}");
+            }
+
+            if (verification != null && verification.Success)
+            {
+                return false;
+            }
+
+            string reason = verification?.Message;
+            string suffix = string.IsNullOrWhiteSpace(reason) ? string.Empty : $": {reason}";
+            McpLog.Info($"[GuardedNotice] [HTTP Auto-Start] Existing local HTTP bridge is stale; restarting session{suffix}");
+
+            try
+            {
+                await bridge.StopAsync();
+            }
+            catch (Exception ex)
+            {
+                McpLog.Warn($"[HTTP Auto-Start] Failed to stop stale bridge before reconnect: {ex.Message}");
+            }
+
+            return true;
         }
 
         /// <summary>
