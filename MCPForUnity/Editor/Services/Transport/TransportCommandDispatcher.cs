@@ -24,6 +24,11 @@ namespace MCPForUnity.Editor.Services.Transport
         private static int _mainThreadId;
         private static int _processingFlag;
 
+        // Opt-in diagnostic (default off): when true, skip the per-command QueuePlayerLoopUpdate nudge
+        // while in Play Mode (the player loop already runs every frame there). Lets a run A/B whether
+        // the forced tick contributes to per-call stutter. Toggle via EditorPrefs "MCPForUnity.GatePlayerLoopInPlay".
+        private static bool GatePlayerLoopInPlay => EditorPrefs.GetBool("MCPForUnity.GatePlayerLoopInPlay", false);
+
         private sealed class PendingCommand
         {
             public PendingCommand(
@@ -173,8 +178,11 @@ namespace MCPForUnity.Editor.Services.Transport
             {
                 try
                 {
-                    // Hint Unity to run a loop iteration soon.
-                    EditorApplication.QueuePlayerLoopUpdate();
+                    // Hint Unity to run a loop iteration soon. In Play Mode the player loop already
+                    // runs every frame, so this per-command nudge can perturb frame pacing; the opt-in
+                    // GatePlayerLoopInPlay diagnostic (default off) lets a run A/B its contribution.
+                    if (!(GatePlayerLoopInPlay && EditorApplication.isPlaying))
+                        EditorApplication.QueuePlayerLoopUpdate();
                 }
                 catch
                 {
@@ -297,22 +305,29 @@ namespace MCPForUnity.Editor.Services.Transport
                 return;
             }
 
-            if (!IsValidJson(commandText))
-            {
-                var invalidJsonResponse = new
-                {
-                    status = "error",
-                    error = "Invalid JSON format",
-                    receivedText = commandText.Length > 50 ? commandText[..50] + "..." : commandText
-                };
-                pending.TrySetResult(JsonConvert.SerializeObject(invalidJsonResponse));
-                RemovePending(id, pending);
-                return;
-            }
-
             try
             {
-                var command = JsonConvert.DeserializeObject<Command>(commandText);
+                Command command;
+                try
+                {
+                    command = JsonConvert.DeserializeObject<Command>(commandText);
+                }
+                catch (JsonException)
+                {
+                    // Single-parse fast path: malformed JSON surfaces here instead of a separate
+                    // IsValidJson -> JToken.Parse pre-pass that double-parsed every command on the
+                    // Unity main thread. Error contract (message + receivedText preview) preserved.
+                    var invalidJsonResponse = new
+                    {
+                        status = "error",
+                        error = "Invalid JSON format",
+                        receivedText = commandText.Length > 50 ? commandText[..50] + "..." : commandText
+                    };
+                    pending.TrySetResult(JsonConvert.SerializeObject(invalidJsonResponse));
+                    RemovePending(id, pending);
+                    return;
+                }
+
                 if (command == null)
                 {
                     pending.TrySetResult(SerializeError("Command deserialized to null", "Unknown", commandText));
@@ -363,6 +378,11 @@ namespace MCPForUnity.Editor.Services.Transport
 
                 var logType = resourceMeta != null ? "resource" : toolMeta != null ? "tool" : "unknown";
                 var sw = McpLogRecord.IsEnabled ? System.Diagnostics.Stopwatch.StartNew() : null;
+                // Queue latency: how long this command waited in Pending before the main-thread pump
+                // ran it. High queueMs with low handler ms => commands backing up on the main thread.
+                long queueMs = McpLogRecord.IsEnabled
+                    ? (long)(DateTime.UtcNow - pending.QueuedAt).TotalMilliseconds
+                    : -1;
 
                 string autoLockToken = null;
                 string lockAction = parameters?.Value<string>("action");
@@ -429,6 +449,7 @@ namespace MCPForUnity.Editor.Services.Transport
                     var capturedParams = parameters;
                     var capturedLogType = logType;
                     var capturedAutoLockToken = autoLockToken;
+                    var capturedQueueMs = queueMs;
                     pending.CompletionSource.Task.ContinueWith(t =>
                     {
                         SharedEditorOperationLock.ReleaseIfAutoLock(capturedAutoLockToken);
@@ -454,7 +475,7 @@ namespace MCPForUnity.Editor.Services.Transport
                             catch { }
                         }
                         McpLogRecord.Log(capturedType, capturedParams, capturedLogType,
-                            logStatus, sw?.ElapsedMilliseconds ?? 0, logError);
+                            logStatus, sw?.ElapsedMilliseconds ?? 0, logError, capturedQueueMs);
                         EditorApplication.delayCall += () => RemovePending(id, pending);
                     }, TaskScheduler.Default);
                     return;
@@ -470,7 +491,7 @@ namespace MCPForUnity.Editor.Services.Transport
                     syncLogStatus = "ERROR";
                     syncLogError = errResp.Error;
                 }
-                McpLogRecord.Log(command.type, parameters, logType, syncLogStatus, sw?.ElapsedMilliseconds ?? 0, syncLogError);
+                McpLogRecord.Log(command.type, parameters, logType, syncLogStatus, sw?.ElapsedMilliseconds ?? 0, syncLogError, queueMs);
 
                 var response = new { status = "success", result };
                 pending.TrySetResult(JsonConvert.SerializeObject(response));
@@ -520,30 +541,6 @@ namespace MCPForUnity.Editor.Services.Transport
                 stackTrace
             };
             return JsonConvert.SerializeObject(errorResponse);
-        }
-
-        private static bool IsValidJson(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                return false;
-            }
-
-            text = text.Trim();
-            if ((text.StartsWith("{") && text.EndsWith("}")) || (text.StartsWith("[") && text.EndsWith("]")))
-            {
-                try
-                {
-                    JToken.Parse(text);
-                    return true;
-                }
-                catch
-                {
-                    return false;
-                }
-            }
-
-            return false;
         }
     }
 }

@@ -48,6 +48,10 @@ namespace MCPForUnity.Editor.Tools
         /// <summary>Count of real compilations performed (cache misses). Test seam.</summary>
         internal static long CompileCount => System.Threading.Interlocked.Read(ref _compileCount);
 
+        /// <summary>Count of real MetadataReference-set builds (disk read + metadata parse). Test seam
+        /// for the per-domain reference cache: distinct snippets within a domain reuse one built set.</summary>
+        internal static long RefBuildCount => RoslynCompiler.RefBuildCount;
+
         [UnityEditor.InitializeOnLoadMethod]
         private static void OnDomainReload()
         {
@@ -584,6 +588,57 @@ namespace MCPForUnity.Editor.Tools
         private static object _parseOptions;
         private static object _compilationOptions;
 
+        // Per-domain MetadataReference cache. MetadataReference.CreateFromFile reads and parses each
+        // assembly's PE metadata; for a large project that dominates a cache-miss compile (measured
+        // ~70-85% of it). PortableExecutableReference is immutable and safe to reuse across
+        // compilations, so build the set once per domain and reuse it for every distinct snippet.
+        // Keyed by the assembly-paths array *instance*, which ExecuteCode recreates on domain reload
+        // (GetAssemblyPaths caches _cachedAssemblyPaths, nulled in OnDomainReload) — same validity
+        // envelope as that existing per-domain path cache, so no new invalidation risk.
+        private static object _cachedMetadataRefs;   // List<MetadataReference> as IList
+        private static string[] _cachedRefsPaths;
+        private static long _refBuildCount;
+        private static readonly object _refsLock = new object();
+
+        /// <summary>Count of real MetadataReference-set builds (disk read + metadata parse). Test seam.</summary>
+        internal static long RefBuildCount => System.Threading.Interlocked.Read(ref _refBuildCount);
+
+        // Build the metadata reference set for these paths, or reuse the per-domain cached set when the
+        // same (per-domain-stable) assembly-paths array instance is passed again. Cleared on domain
+        // reload / ClearCompileCacheForTests via ResetCache().
+        private static System.Collections.IList GetOrBuildMetadataReferences(string[] assemblyPaths)
+        {
+            lock (_refsLock)
+            {
+                if (_cachedMetadataRefs != null && ReferenceEquals(_cachedRefsPaths, assemblyPaths))
+                    return (System.Collections.IList)_cachedMetadataRefs;
+
+                var listType = typeof(List<>).MakeGenericType(_metadataReferenceType);
+                var refs = (System.Collections.IList)Activator.CreateInstance(listType);
+                foreach (var path in assemblyPaths)
+                {
+                    try
+                    {
+                        var cfParams = _createFromFile.GetParameters();
+                        var cfArgs = new object[cfParams.Length];
+                        cfArgs[0] = path; // string path
+                        for (int i = 1; i < cfParams.Length; i++)
+                            cfArgs[i] = cfParams[i].HasDefaultValue ? cfParams[i].DefaultValue : null;
+                        refs.Add(_createFromFile.Invoke(null, cfArgs));
+                    }
+                    catch
+                    {
+                        // Skip assemblies that can't be loaded as metadata
+                    }
+                }
+
+                _cachedMetadataRefs = refs;
+                _cachedRefsPaths = assemblyPaths;
+                System.Threading.Interlocked.Increment(ref _refBuildCount);
+                return refs;
+            }
+        }
+
         public static bool IsAvailable
         {
             get
@@ -597,6 +652,11 @@ namespace MCPForUnity.Editor.Tools
         public static void ResetCache()
         {
             _isAvailable = null;
+            lock (_refsLock)
+            {
+                _cachedMetadataRefs = null;
+                _cachedRefsPaths = null;
+            }
         }
 
         private static bool Initialize()
@@ -697,28 +757,8 @@ namespace MCPForUnity.Editor.Tools
                 // Parse source
                 var syntaxTree = _parseText.Invoke(null, new object[] { source, _parseOptions, null, null, default(System.Threading.CancellationToken) });
 
-                // Build metadata references
-                var metadataRefBase = _metadataReferenceType;
-                var listType = typeof(List<>).MakeGenericType(metadataRefBase);
-                var refs = (System.Collections.IList)Activator.CreateInstance(listType);
-
-                foreach (var path in assemblyPaths)
-                {
-                    try
-                    {
-                        var cfParams = _createFromFile.GetParameters();
-                        var cfArgs = new object[cfParams.Length];
-                        cfArgs[0] = path; // string path
-                        for (int i = 1; i < cfParams.Length; i++)
-                            cfArgs[i] = cfParams[i].HasDefaultValue ? cfParams[i].DefaultValue : null;
-                        var metaRef = _createFromFile.Invoke(null, cfArgs);
-                        refs.Add(metaRef);
-                    }
-                    catch
-                    {
-                        // Skip assemblies that can't be loaded as metadata
-                    }
-                }
+                // Build (or reuse the per-domain cached) metadata reference set.
+                var refs = GetOrBuildMetadataReferences(assemblyPaths);
 
                 // Build syntax tree array
                 var syntaxTreeBase = Type.GetType("Microsoft.CodeAnalysis.SyntaxTree, Microsoft.CodeAnalysis");

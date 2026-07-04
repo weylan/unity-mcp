@@ -34,7 +34,7 @@ namespace MCPForUnity.Editor.Helpers
             }
         }
 
-        internal static void Log(string commandType, JObject parameters, string type, string status, long durationMs, string error = null)
+        internal static void Log(string commandType, JObject parameters, string type, string status, long durationMs, string error = null, long queueMs = -1)
         {
             if (!IsEnabled) return;
 
@@ -48,6 +48,10 @@ namespace MCPForUnity.Editor.Helpers
                     ["status"] = status,
                     ["ms"] = durationMs
                 };
+
+                // Main-thread queue latency (ms) — how long the command waited before executing.
+                if (queueMs >= 0)
+                    entry["queueMs"] = queueMs;
 
                 var action = parameters?.Value<string>("action");
                 if (!string.IsNullOrEmpty(action))

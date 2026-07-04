@@ -76,6 +76,47 @@ namespace MCPForUnityTests.Editor.Tools
             StringAssert.Contains("Blocked", on.Value<string>("error") ?? on["error"]?.ToString() ?? string.Empty);
         }
 
+        // ──────────────────── MetadataReference cache (per-domain) ────────────────────
+
+        // The reference set (MetadataReference.CreateFromFile over every loaded assembly) is the
+        // dominant cost of a cache-miss compile, so it must be built once per domain and reused
+        // across distinct snippets. RefBuildCount is a Roslyn-path-only seam.
+        [Test]
+        public void Execute_DistinctSources_ReuseMetadataReferenceSet()
+        {
+            if (!RoslynAvailable())
+                Assert.Ignore("Roslyn backend not installed here; the MetadataReference cache is Roslyn-only.");
+
+            ExecuteCode.ClearCompileCacheForTests();
+            long beforeCompile = ExecuteCode.CompileCount;
+            long beforeRefs = ExecuteCode.RefBuildCount;
+
+            Assert.IsTrue(ExecuteWithCompiler("return 1001;", "roslyn").Value<bool>("success"));
+            Assert.IsTrue(ExecuteWithCompiler("return 2002;", "roslyn").Value<bool>("success"));
+
+            Assert.AreEqual(2, ExecuteCode.CompileCount - beforeCompile,
+                "Two distinct sources each compile (no false cache hit).");
+            Assert.AreEqual(1, ExecuteCode.RefBuildCount - beforeRefs,
+                "The metadata reference set must be built once per domain and reused across distinct snippets.");
+        }
+
+        [Test]
+        public void Execute_AfterCacheClear_RebuildsMetadataReferenceSet()
+        {
+            if (!RoslynAvailable())
+                Assert.Ignore("Roslyn backend not installed here; the MetadataReference cache is Roslyn-only.");
+
+            ExecuteCode.ClearCompileCacheForTests();
+            long beforeRefs = ExecuteCode.RefBuildCount;
+
+            ExecuteWithCompiler("return 7;", "roslyn");            // miss -> build refs
+            ExecuteCode.ClearCompileCacheForTests();                // domain-reload equivalent
+            ExecuteWithCompiler("return 7;", "roslyn");            // must rebuild the reference set
+
+            Assert.AreEqual(2, ExecuteCode.RefBuildCount - beforeRefs,
+                "Clearing the cache (domain-reload equivalent) must rebuild the reference set.");
+        }
+
         // ──────────────────── Execute: success cases ────────────────────
 
         [Test]
@@ -449,6 +490,25 @@ namespace MCPForUnityTests.Editor.Tools
                 ["code"] = code,
                 ["safety_checks"] = safetyChecks
             }));
+        }
+
+        private static JObject ExecuteWithCompiler(string code, string compiler)
+        {
+            return ToJObject(ExecuteCode.HandleCommand(new JObject
+            {
+                ["action"] = "execute",
+                ["code"] = code,
+                ["compiler"] = compiler
+            }));
+        }
+
+        // A roslyn execute that fails with a "Roslyn ... not available" error means the compiler DLLs
+        // are absent in this test project; the RefBuildCount seam only fires on the Roslyn path.
+        private static bool RoslynAvailable()
+        {
+            var r = ExecuteWithCompiler("return 0;", "roslyn");
+            if (r.Value<bool>("success")) return true;
+            return !(r.Value<string>("error") ?? "").Contains("Roslyn");
         }
 
     }
