@@ -28,7 +28,7 @@ namespace MCPForUnity.Editor.Services.Transport
         // while in Play Mode (the player loop already runs every frame there). Lets a run A/B whether
         // the forced tick contributes to per-call stutter. Toggle via EditorPrefs "MCPForUnity.GatePlayerLoopInPlay".
         private static bool GatePlayerLoopInPlay => EditorPrefs.GetBool("MCPForUnity.GatePlayerLoopInPlay", false);
-        private const int DefaultPlayModeMaxCommandsPerPump = 8;
+        private const int DefaultPlayModeMaxCommandsPerPump = 16;
         private const int DefaultPlayModePumpBudgetMs = 4;
         private static bool SlicePendingCommandsInPlayMode =>
             EditorPrefs.GetBool("MCPForUnity.SlicePendingCommandsInPlayMode", true);
@@ -199,7 +199,11 @@ namespace MCPForUnity.Editor.Services.Transport
                     // Best-effort only.
                 }
 
-                ProcessQueue();
+                // In Play Mode slicing, let the installed update hook consume one batch per frame.
+                if (!IsPlayModeQueueSlicingActive())
+                {
+                    ProcessQueue();
+                }
             }
 
             if (_mainThreadContext != null && Thread.CurrentThread.ManagedThreadId != _mainThreadId)
