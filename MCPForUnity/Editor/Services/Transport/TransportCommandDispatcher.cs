@@ -28,6 +28,14 @@ namespace MCPForUnity.Editor.Services.Transport
         // while in Play Mode (the player loop already runs every frame there). Lets a run A/B whether
         // the forced tick contributes to per-call stutter. Toggle via EditorPrefs "MCPForUnity.GatePlayerLoopInPlay".
         private static bool GatePlayerLoopInPlay => EditorPrefs.GetBool("MCPForUnity.GatePlayerLoopInPlay", false);
+        private const int DefaultPlayModeMaxCommandsPerPump = 8;
+        private const int DefaultPlayModePumpBudgetMs = 4;
+        private static bool SlicePendingCommandsInPlayMode =>
+            EditorPrefs.GetBool("MCPForUnity.SlicePendingCommandsInPlayMode", true);
+        private static int PlayModeMaxCommandsPerPump =>
+            Math.Max(1, EditorPrefs.GetInt("MCPForUnity.PlayModeMaxCommandsPerPump", DefaultPlayModeMaxCommandsPerPump));
+        private static int PlayModePumpBudgetMs =>
+            Math.Max(1, EditorPrefs.GetInt("MCPForUnity.PlayModePumpBudgetMs", DefaultPlayModePumpBudgetMs));
 
         private sealed class PendingCommand
         {
@@ -68,6 +76,7 @@ namespace MCPForUnity.Editor.Services.Transport
         }
 
         private static readonly Dictionary<string, PendingCommand> Pending = new();
+        private static readonly List<string> PendingOrder = new();
         private static readonly object PendingLock = new();
         private static bool updateHooked;
         private static bool initialised;
@@ -113,6 +122,7 @@ namespace MCPForUnity.Editor.Services.Transport
             lock (PendingLock)
             {
                 Pending[id] = pending;
+                PendingOrder.Add(id);
             }
 
             // Proactively wake up the main thread execution loop. This improves responsiveness
@@ -236,44 +246,150 @@ namespace MCPForUnity.Editor.Services.Transport
 
             try
             {
-            List<(string id, PendingCommand pending)> ready;
+                List<(string id, PendingCommand pending)> ready;
+                bool sliceInPlayMode = IsPlayModeQueueSlicingActive();
 
-            lock (PendingLock)
-            {
-                // Early exit inside lock to prevent per-frame List allocations (GitHub issue #577)
-                if (Pending.Count == 0)
+                lock (PendingLock)
                 {
-                    return;
-                }
-
-                ready = new List<(string, PendingCommand)>(Pending.Count);
-                foreach (var kvp in Pending)
-                {
-                    if (kvp.Value.IsExecuting)
+                    // Early exit inside lock to prevent per-frame List allocations (GitHub issue #577)
+                    if (Pending.Count == 0)
                     {
-                        continue;
+                        PendingOrder.Clear();
+                        return;
                     }
 
-                    kvp.Value.IsExecuting = true;
-                    ready.Add((kvp.Key, kvp.Value));
+                    int readyLimit = ResolveReadyLimit(Pending.Count, sliceInPlayMode, PlayModeMaxCommandsPerPump);
+                    ready = new List<(string, PendingCommand)>(Math.Min(Pending.Count, readyLimit));
+                    PrunePendingOrderLocked();
+                    for (int i = 0; i < PendingOrder.Count && ready.Count < readyLimit; i++)
+                    {
+                        var id = PendingOrder[i];
+                        if (!Pending.TryGetValue(id, out var pending) || pending.IsExecuting)
+                        {
+                            continue;
+                        }
+
+                        pending.IsExecuting = true;
+                        ready.Add((id, pending));
+                    }
+
+                    if (ready.Count == 0)
+                    {
+                        UnhookUpdateIfIdle();
+                        return;
+                    }
                 }
 
-                if (ready.Count == 0)
+                var pumpSw = sliceInPlayMode ? System.Diagnostics.Stopwatch.StartNew() : null;
+                for (int i = 0; i < ready.Count; i++)
                 {
-                    UnhookUpdateIfIdle();
-                    return;
-                }
-            }
+                    if (ShouldYieldPlayModePump(i, pumpSw))
+                    {
+                        ResetExecuting(ready, i);
+                        break;
+                    }
 
-            foreach (var (id, pending) in ready)
-            {
-                ProcessCommand(id, pending);
-            }
+                    var (id, pending) = ready[i];
+                    ProcessCommand(id, pending);
+                }
             }
             finally
             {
                 Interlocked.Exchange(ref _processingFlag, 0);
             }
+        }
+
+        private static bool IsPlayModeQueueSlicingActive()
+        {
+            return SlicePendingCommandsInPlayMode && EditorApplication.isPlaying;
+        }
+
+        private static void PrunePendingOrderLocked()
+        {
+            for (int i = PendingOrder.Count - 1; i >= 0; i--)
+            {
+                if (!Pending.ContainsKey(PendingOrder[i]))
+                {
+                    PendingOrder.RemoveAt(i);
+                }
+            }
+        }
+
+        private static int ResolveReadyLimit(int pendingCount, bool sliceInPlayMode, int maxCommandsPerPump)
+        {
+            if (pendingCount <= 0)
+            {
+                return 0;
+            }
+
+            if (!sliceInPlayMode)
+            {
+                return pendingCount;
+            }
+
+            return Math.Min(pendingCount, Math.Max(1, maxCommandsPerPump));
+        }
+
+        private static bool ShouldYieldPlayModePump(int processedCount, System.Diagnostics.Stopwatch pumpSw)
+        {
+            if (pumpSw == null || processedCount <= 0)
+            {
+                return false;
+            }
+
+            return processedCount >= PlayModeMaxCommandsPerPump
+                   || pumpSw.ElapsedMilliseconds >= PlayModePumpBudgetMs;
+        }
+
+        private static void ResetExecuting(List<(string id, PendingCommand pending)> ready, int startIndex)
+        {
+            lock (PendingLock)
+            {
+                for (int i = startIndex; i < ready.Count; i++)
+                {
+                    var (id, pending) = ready[i];
+                    if (Pending.TryGetValue(id, out var current) && ReferenceEquals(current, pending))
+                    {
+                        current.IsExecuting = false;
+                    }
+                }
+            }
+        }
+
+        internal static int ResolveReadyLimitForTests(int pendingCount, bool sliceInPlayMode, int maxCommandsPerPump)
+        {
+            return ResolveReadyLimit(pendingCount, sliceInPlayMode, maxCommandsPerPump);
+        }
+
+        internal static IReadOnlyList<string> SelectReadyIdsForTests(
+            IReadOnlyList<string> queuedIds,
+            ISet<string> pendingIds,
+            ISet<string> executingIds,
+            int readyLimit)
+        {
+            var selected = new List<string>();
+            if (queuedIds == null || pendingIds == null || readyLimit <= 0)
+            {
+                return selected;
+            }
+
+            executingIds ??= new HashSet<string>();
+            foreach (var id in queuedIds)
+            {
+                if (selected.Count >= readyLimit)
+                {
+                    break;
+                }
+
+                if (!pendingIds.Contains(id) || executingIds.Contains(id))
+                {
+                    continue;
+                }
+
+                selected.Add(id);
+            }
+
+            return selected;
         }
 
         private static void ProcessCommand(string id, PendingCommand pending)
@@ -512,6 +628,11 @@ namespace MCPForUnity.Editor.Services.Transport
             {
                 if (Pending.Remove(id, out pending))
                 {
+                    if (Pending.Count == 0)
+                    {
+                        PendingOrder.Clear();
+                    }
+
                     UnhookUpdateIfIdle();
                 }
             }
@@ -525,6 +646,11 @@ namespace MCPForUnity.Editor.Services.Transport
             lock (PendingLock)
             {
                 Pending.Remove(id);
+                if (Pending.Count == 0)
+                {
+                    PendingOrder.Clear();
+                }
+
                 UnhookUpdateIfIdle();
             }
 
