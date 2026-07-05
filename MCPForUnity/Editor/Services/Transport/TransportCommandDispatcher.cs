@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Helpers;
@@ -36,6 +37,8 @@ namespace MCPForUnity.Editor.Services.Transport
             Math.Max(1, EditorPrefs.GetInt("MCPForUnity.PlayModeMaxCommandsPerPump", DefaultPlayModeMaxCommandsPerPump));
         private static int PlayModePumpBudgetMs =>
             Math.Max(1, EditorPrefs.GetInt("MCPForUnity.PlayModePumpBudgetMs", DefaultPlayModePumpBudgetMs));
+        internal static Func<bool> SlicingActiveOverrideForTests;
+        internal static Action<Action> DelayCallRegistrarForTests;
 
         private sealed class PendingCommand
         {
@@ -305,7 +308,55 @@ namespace MCPForUnity.Editor.Services.Transport
 
         private static bool IsPlayModeQueueSlicingActive()
         {
+            if (SlicingActiveOverrideForTests != null)
+            {
+                return SlicingActiveOverrideForTests();
+            }
+
             return SlicePendingCommandsInPlayMode && EditorApplication.isPlaying;
+        }
+
+        internal static void ProcessQueueForTests()
+        {
+            ProcessQueue();
+        }
+
+        internal static int PendingCountForTests
+        {
+            get
+            {
+                lock (PendingLock)
+                {
+                    return Pending.Count;
+                }
+            }
+        }
+
+        internal static IReadOnlyList<string> PendingOrderSnapshotForTests()
+        {
+            lock (PendingLock)
+            {
+                return PendingOrder.ToArray();
+            }
+        }
+
+        internal static void ResetForTests()
+        {
+            List<PendingCommand> pendingCommands;
+            lock (PendingLock)
+            {
+                pendingCommands = Pending.Values.ToList();
+
+                Pending.Clear();
+                PendingOrder.Clear();
+            }
+
+            foreach (var pending in pendingCommands)
+            {
+                pending.Dispose();
+            }
+
+            Interlocked.Exchange(ref _processingFlag, 0);
         }
 
         private static void PrunePendingOrderLocked()
@@ -572,31 +623,43 @@ namespace MCPForUnity.Editor.Services.Transport
                     var capturedQueueMs = queueMs;
                     pending.CompletionSource.Task.ContinueWith(t =>
                     {
-                        SharedEditorOperationLock.ReleaseIfAutoLock(capturedAutoLockToken);
-                        sw?.Stop();
-                        var logStatus = "SUCCESS";
-                        string logError = null;
-                        if (t.IsFaulted)
+                        try
                         {
-                            logStatus = "ERROR";
-                            logError = t.Exception?.InnerException?.Message;
-                        }
-                        else if (t.IsCompletedSuccessfully && t.Result != null)
-                        {
-                            try
+                            SharedEditorOperationLock.ReleaseIfAutoLock(capturedAutoLockToken);
+                            sw?.Stop();
+                            var logStatus = "SUCCESS";
+                            string logError = null;
+                            if (t.IsFaulted)
                             {
-                                var resultObj = JObject.Parse(t.Result);
-                                if (string.Equals(resultObj.Value<string>("status"), "error", StringComparison.OrdinalIgnoreCase))
-                                {
-                                    logStatus = "ERROR";
-                                    logError = resultObj.Value<string>("error");
-                                }
+                                logStatus = "ERROR";
+                                logError = t.Exception?.InnerException?.Message;
                             }
-                            catch { }
+                            else if (t.IsCompletedSuccessfully && t.Result != null)
+                            {
+                                try
+                                {
+                                    var resultObj = JObject.Parse(t.Result);
+                                    if (string.Equals(resultObj.Value<string>("status"), "error", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        logStatus = "ERROR";
+                                        logError = resultObj.Value<string>("error");
+                                    }
+                                }
+                                catch { }
+                            }
+                            McpLogRecord.Log(capturedType, capturedParams, capturedLogType,
+                                logStatus, sw?.ElapsedMilliseconds ?? 0, logError, capturedQueueMs);
+                            RegisterDelayCall(() => RemovePending(id, pending));
                         }
-                        McpLogRecord.Log(capturedType, capturedParams, capturedLogType,
-                            logStatus, sw?.ElapsedMilliseconds ?? 0, logError, capturedQueueMs);
-                        EditorApplication.delayCall += () => RemovePending(id, pending);
+                        catch (Exception cleanupEx)
+                        {
+                            // This continuation runs on the thread pool. RemovePending is safe here:
+                            // it holds PendingLock, UnhookUpdateIfIdle is a no-op, and PendingCommand
+                            // Dispose only releases CancellationTokenRegistration. TrySet* guards
+                            // double-completion if cancellation wins the race.
+                            RemovePending(id, pending);
+                            McpLog.Warn($"Async cleanup failed for {capturedType}: {cleanupEx.Message}");
+                        }
                     }, TaskScheduler.Default);
                     return;
                 }
@@ -632,6 +695,7 @@ namespace MCPForUnity.Editor.Services.Transport
             {
                 if (Pending.Remove(id, out pending))
                 {
+                    PendingOrder.Remove(id);
                     if (Pending.Count == 0)
                     {
                         PendingOrder.Clear();
@@ -649,7 +713,11 @@ namespace MCPForUnity.Editor.Services.Transport
         {
             lock (PendingLock)
             {
-                Pending.Remove(id);
+                if (Pending.Remove(id))
+                {
+                    PendingOrder.Remove(id);
+                }
+
                 if (Pending.Count == 0)
                 {
                     PendingOrder.Clear();
@@ -659,6 +727,17 @@ namespace MCPForUnity.Editor.Services.Transport
             }
 
             pending.Dispose();
+        }
+
+        private static void RegisterDelayCall(Action action)
+        {
+            if (DelayCallRegistrarForTests != null)
+            {
+                DelayCallRegistrarForTests(action);
+                return;
+            }
+
+            EditorApplication.delayCall += () => action();
         }
 
         private static string SerializeError(string message, string commandType = null, string stackTrace = null)

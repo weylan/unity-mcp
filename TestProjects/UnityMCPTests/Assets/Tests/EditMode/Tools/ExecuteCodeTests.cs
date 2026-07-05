@@ -35,6 +35,22 @@ namespace MCPForUnityTests.Editor.Tools
         }
 
         [Test]
+        public void Execute_SameCodeWithDifferentArgs_CompilesOnce()
+        {
+            long before = ExecuteCode.CompileCount;
+            const string code = "return __mcpArgs[0];";
+
+            var r1 = Execute(code, new JArray("first"));
+            var r2 = Execute(code, new JArray("second"));
+
+            Assert.IsTrue(r1.Value<bool>("success"), r1.ToString());
+            Assert.IsTrue(r2.Value<bool>("success"), r2.ToString());
+            Assert.AreEqual("second", r2["data"]["result"].Value<string>());
+            Assert.AreEqual(1, ExecuteCode.CompileCount - before,
+                "Args must not participate in the compile-cache key.");
+        }
+
+        [Test]
         public void Execute_DifferentCode_CompilesEachTime()
         {
             long before = ExecuteCode.CompileCount;
@@ -126,6 +142,24 @@ namespace MCPForUnityTests.Editor.Tools
 
             Assert.IsTrue(result.Value<bool>("success"), result.ToString());
             Assert.AreEqual("hello", result["data"]["result"].Value<string>());
+        }
+
+        [Test]
+        public void Execute_WithArgs_PassesStringArrayToSnippet()
+        {
+            var result = Execute("return string.Join(\"|\", __mcpArgs);", new JArray("alpha", 7, "omega"));
+
+            Assert.IsTrue(result.Value<bool>("success"), result.ToString());
+            Assert.AreEqual("alpha|7|omega", result["data"]["result"].Value<string>());
+        }
+
+        [Test]
+        public void Execute_NoArgs_AllowsExistingLocalVariableNamedArgs()
+        {
+            var result = Execute("var args = new[] { \"local\" }; return args[0];");
+
+            Assert.IsTrue(result.Value<bool>("success"), result.ToString());
+            Assert.AreEqual("local", result["data"]["result"].Value<string>());
         }
 
         [Test]
@@ -388,6 +422,22 @@ namespace MCPForUnityTests.Editor.Tools
         }
 
         [Test]
+        public void Replay_WithArgs_ReExecutesWithOriginalArgs()
+        {
+            var initial = Execute("return __mcpArgs[0];", new JArray("from-history"));
+            Assert.IsTrue(initial.Value<bool>("success"), initial.ToString());
+
+            var result = ToJObject(ExecuteCode.HandleCommand(new JObject
+            {
+                ["action"] = "replay",
+                ["index"] = 0
+            }));
+
+            Assert.IsTrue(result.Value<bool>("success"), result.ToString());
+            Assert.AreEqual("from-history", result["data"]["result"].Value<string>());
+        }
+
+        [Test]
         public void Replay_InvalidIndex_ReturnsError()
         {
             Execute("return 1;");
@@ -458,6 +508,16 @@ namespace MCPForUnityTests.Editor.Tools
         }
 
         [Test]
+        public void Execute_CodedomBackend_PassesArgs()
+        {
+            var result = ExecuteWithCompiler("return __mcpArgs[0] + \":\" + __mcpArgs.Length;", "codedom", new JArray("cd"));
+
+            Assert.IsTrue(result.Value<bool>("success"), result.ToString());
+            Assert.AreEqual("cd:1", result["data"]["result"].Value<string>());
+            Assert.AreEqual("codedom", result["data"]["compiler"].Value<string>());
+        }
+
+        [Test]
         public void Execute_CodedomBackend_ResolvesUnityTypes()
         {
             var result = ToJObject(ExecuteCode.HandleCommand(new JObject
@@ -482,6 +542,16 @@ namespace MCPForUnityTests.Editor.Tools
             }));
         }
 
+        private static JObject Execute(string code, JArray args)
+        {
+            return ToJObject(ExecuteCode.HandleCommand(new JObject
+            {
+                ["action"] = "execute",
+                ["code"] = code,
+                ["args"] = args
+            }));
+        }
+
         private static JObject Execute(string code, bool safetyChecks)
         {
             return ToJObject(ExecuteCode.HandleCommand(new JObject
@@ -499,6 +569,17 @@ namespace MCPForUnityTests.Editor.Tools
                 ["action"] = "execute",
                 ["code"] = code,
                 ["compiler"] = compiler
+            }));
+        }
+
+        private static JObject ExecuteWithCompiler(string code, string compiler, JArray args)
+        {
+            return ToJObject(ExecuteCode.HandleCommand(new JObject
+            {
+                ["action"] = "execute",
+                ["code"] = code,
+                ["compiler"] = compiler,
+                ["args"] = args
             }));
         }
 
