@@ -63,6 +63,18 @@ def test_execute_sends_safety_checks_false(mock_unity):
     assert mock_unity["params"]["safety_checks"] is False
 
 
+def test_execute_forwards_args(mock_unity):
+    asyncio.run(
+        execute_code(
+            SimpleNamespace(),
+            action="execute",
+            code="return __mcpArgs[0];",
+            args=["button", 7],
+        )
+    )
+    assert mock_unity["params"]["args"] == ["button", 7]
+
+
 def test_execute_returns_data(mock_unity):
     result = asyncio.run(execute_code(SimpleNamespace(), action="execute", code="return 42;"))
     assert result["data"]["result"] == 42
@@ -146,6 +158,7 @@ def test_non_dict_response_handled(monkeypatch):
 
 def test_execute_omits_irrelevant_params(mock_unity):
     asyncio.run(execute_code(SimpleNamespace(), action="execute", code="return 1;"))
+    assert "args" not in mock_unity["params"]
     assert "index" not in mock_unity["params"]
     assert "limit" not in mock_unity["params"]
 

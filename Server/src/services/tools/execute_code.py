@@ -64,6 +64,10 @@ async def execute_code(
         "'auto' uses Roslyn if Microsoft.CodeAnalysis is installed, else falls back to CodeDom. "
         "'roslyn' forces Roslyn (C# 12+). 'codedom' forces legacy CSharpCodeProvider (C# 6). Default: auto.",
     ] = "auto",
+    args: Annotated[
+        list[Any] | None,
+        "Optional arguments passed to the dynamic Execute(string[] __mcpArgs) wrapper.",
+    ] = None,
 ) -> dict[str, Any]:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -75,6 +79,7 @@ async def execute_code(
         params_dict["code"] = code
         params_dict["safety_checks"] = safety_checks
         params_dict["compiler"] = compiler
+        params_dict["args"] = args
     elif action == "replay":
         if index is None:
             return {"success": False, "message": "Parameter 'index' is required for 'replay' action."}

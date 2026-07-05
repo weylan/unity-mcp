@@ -141,20 +141,24 @@ namespace MCPForUnity.Editor.Tools
                     return new ErrorResponse($"Blocked pattern detected: {violation}");
             }
 
+            var args = Array.Empty<string>();
             try
             {
                 var startTime = DateTime.UtcNow;
-                var result = CompileAndExecute(code, compiler);
+                if (!TryReadArgs(@params, out args, out var argsError))
+                    return argsError;
+
+                var result = CompileAndExecute(code, compiler, args);
                 var elapsed = (DateTime.UtcNow - startTime).TotalMilliseconds;
 
-                AddToHistory(code, result, elapsed, safetyChecks, compiler);
+                AddToHistory(code, args, result, elapsed, safetyChecks, compiler);
                 return result;
             }
             catch (Exception e)
             {
                 McpLog.Error($"[ExecuteCode] Execution failed: {e}");
                 var errorResult = new ErrorResponse($"Execution failed: {e.Message}");
-                AddToHistory(code, errorResult, 0, safetyChecks, compiler);
+                AddToHistory(code, args, errorResult, 0, safetyChecks, compiler);
                 return errorResult;
             }
         }
@@ -208,6 +212,7 @@ namespace MCPForUnity.Editor.Tools
             {
                 action = ActionExecute,
                 code = entry.code,
+                args = new JArray(entry.args ?? Array.Empty<string>()),
                 safety_checks = entry.safetyChecksEnabled,
                 compiler = entry.compiler ?? "auto",
             });
@@ -216,7 +221,7 @@ namespace MCPForUnity.Editor.Tools
 
         // ──────────────────── Compilation ────────────────────
 
-        private static object CompileAndExecute(string code, string compiler)
+        private static object CompileAndExecute(string code, string compiler, string[] args)
         {
             string wrappedSource = WrapUserCode(code);
             string[] assemblyPaths = GetAssemblyPaths();
@@ -233,10 +238,10 @@ namespace MCPForUnity.Editor.Tools
             {
                 if (_assemblyCache.TryGetValue(cacheKey, out var cached))
                 {
-                    // Re-invoke the cached assembly's Execute() against current Unity state — intended:
+                    // Re-invoke the cached assembly's Execute(__mcpArgs) against current Unity state — intended:
                     // repeated probes re-run. Note the snippet's compiler-generated statics persist
                     // across cache hits (fresh-compile semantics only on first call / after a reload).
-                    return InvokeCompiled(cached.assembly, cached.usedCompiler);
+                    return InvokeCompiled(cached.assembly, cached.usedCompiler, args);
                 }
             }
 
@@ -287,10 +292,10 @@ namespace MCPForUnity.Editor.Tools
                 _assemblyCache[cacheKey] = (compiled, usedCompiler);
             }
 
-            return InvokeCompiled(compiled, usedCompiler);
+            return InvokeCompiled(compiled, usedCompiler, args);
         }
 
-        private static object InvokeCompiled(Assembly assembly, string compilerUsed)
+        private static object InvokeCompiled(Assembly assembly, string compilerUsed, string[] args)
         {
             var type = assembly.GetType(WrapperClassName);
             if (type == null)
@@ -305,7 +310,8 @@ namespace MCPForUnity.Editor.Tools
 
             try
             {
-                result = method.Invoke(null, null);
+                var invocationArgs = args == null ? Array.Empty<string>() : args.ToArray();
+                result = method.Invoke(null, new object[] { invocationArgs });
             }
             catch (TargetInvocationException tie)
             {
@@ -432,7 +438,7 @@ namespace MCPForUnity.Editor.Tools
             sb.AppendLine("using UnityEditor;");
             sb.AppendLine($"public static class {WrapperClassName}");
             sb.AppendLine("{");
-            sb.AppendLine($"    public static object {WrapperMethodName}()");
+            sb.AppendLine($"    public static object {WrapperMethodName}(string[] __mcpArgs)");
             sb.AppendLine("    {");
             sb.AppendLine(code);
             sb.AppendLine("    }");
@@ -509,7 +515,32 @@ namespace MCPForUnity.Editor.Tools
             return null;
         }
 
-        private static void AddToHistory(string code, object result, double elapsedMs, bool safetyChecks, string compiler = "auto")
+        private static bool TryReadArgs(JObject @params, out string[] args, out ErrorResponse error)
+        {
+            args = Array.Empty<string>();
+            error = null;
+
+            var token = @params["args"];
+            if (token == null || token.Type == JTokenType.Null)
+                return true;
+
+            if (token.Type != JTokenType.Array)
+            {
+                error = new ErrorResponse("Optional parameter 'args' must be a JSON array.");
+                return false;
+            }
+
+            args = ((JArray)token)
+                .Select(item => item.Type == JTokenType.Null
+                    ? null
+                    : item is JValue value
+                        ? Convert.ToString(value.Value)
+                        : item.ToString(Newtonsoft.Json.Formatting.None))
+                .ToArray();
+            return true;
+        }
+
+        private static void AddToHistory(string code, string[] args, object result, double elapsedMs, bool safetyChecks, string compiler = "auto")
         {
             string preview;
             if (result is SuccessResponse sr)
@@ -525,6 +556,7 @@ namespace MCPForUnity.Editor.Tools
             _history.Add(new HistoryEntry
             {
                 code = code,
+                args = args ?? Array.Empty<string>(),
                 success = result is SuccessResponse,
                 resultPreview = preview,
                 elapsedMs = Math.Round(elapsedMs, 1),
@@ -558,6 +590,7 @@ namespace MCPForUnity.Editor.Tools
         private class HistoryEntry
         {
             public string code;
+            public string[] args;
             public bool success;
             public string resultPreview;
             public double elapsedMs;
