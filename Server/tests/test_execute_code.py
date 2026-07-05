@@ -158,6 +158,7 @@ def test_non_dict_response_handled(monkeypatch):
 
 def test_execute_omits_irrelevant_params(mock_unity):
     asyncio.run(execute_code(SimpleNamespace(), action="execute", code="return 1;"))
+    assert "args" not in mock_unity["params"]
     assert "index" not in mock_unity["params"]
     assert "limit" not in mock_unity["params"]
 

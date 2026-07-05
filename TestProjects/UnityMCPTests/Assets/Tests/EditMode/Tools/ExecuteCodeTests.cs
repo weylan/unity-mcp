@@ -438,6 +438,24 @@ namespace MCPForUnityTests.Editor.Tools
         }
 
         [Test]
+        public void Replay_AfterSnippetMutatesArgs_ReplaysOriginalValues()
+        {
+            const string code = "var v = __mcpArgs[0]; __mcpArgs[0] = \"polluted\"; return v;";
+            var initial = Execute(code, new JArray("orig"));
+            Assert.IsTrue(initial.Value<bool>("success"), initial.ToString());
+            Assert.AreEqual("orig", initial["data"]["result"].Value<string>());
+
+            var result = ToJObject(ExecuteCode.HandleCommand(new JObject
+            {
+                ["action"] = "replay",
+                ["index"] = 0
+            }));
+
+            Assert.IsTrue(result.Value<bool>("success"), result.ToString());
+            Assert.AreEqual("orig", result["data"]["result"].Value<string>());
+        }
+
+        [Test]
         public void Replay_InvalidIndex_ReturnsError()
         {
             Execute("return 1;");

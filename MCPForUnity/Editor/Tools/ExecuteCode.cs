@@ -310,7 +310,8 @@ namespace MCPForUnity.Editor.Tools
 
             try
             {
-                result = method.Invoke(null, new object[] { args ?? Array.Empty<string>() });
+                var invocationArgs = args == null ? Array.Empty<string>() : args.ToArray();
+                result = method.Invoke(null, new object[] { invocationArgs });
             }
             catch (TargetInvocationException tie)
             {
