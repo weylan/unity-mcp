@@ -1,5 +1,9 @@
 from transport.plugin_hub import PluginHub
 from services.registry import clear_tool_registry, mcp_for_unity_tool
+from services.registry.tool_registry import _tool_registry
+
+
+_saved_tool_registry = None
 
 
 class FakeMcp:
@@ -17,6 +21,8 @@ class FakeMcp:
 
 
 def setup_function():
+    global _saved_tool_registry
+    _saved_tool_registry = _tool_registry.copy()
     PluginHub._mcp = None
     PluginHub._unity_transform_start = None
     clear_tool_registry()
@@ -28,6 +34,14 @@ def setup_function():
     @mcp_for_unity_tool(name="core_disabled_tool", group="core")
     async def _core_disabled_tool():
         return None
+
+
+def teardown_function():
+    PluginHub._mcp = None
+    PluginHub._unity_transform_start = None
+    clear_tool_registry()
+    if _saved_tool_registry is not None:
+        _tool_registry.extend(_saved_tool_registry)
 
 
 def test_per_tool_visibility_disables_one_core_tool_while_enabling_another():
