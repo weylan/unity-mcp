@@ -100,6 +100,30 @@ function runGit(args, opts, capture = false) {
   return capture ? result.stdout.trim() : "";
 }
 
+function runGitResult(args, opts) {
+  if (opts.dryRun) {
+    console.log(`DRY-RUN git ${args.join(" ")}`);
+    return { status: 0, stdout: "", stderr: "" };
+  }
+
+  const result = spawnSync("git", args, {
+    cwd: opts.cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  if (result.status === 0 && !opts.quiet) {
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+  }
+
+  return {
+    status: result.status,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+  };
+}
+
 function gitOutput(args, opts) {
   return runGit(args, opts, true);
 }
@@ -123,6 +147,24 @@ function ensureClean(opts) {
 function ensureRemote(opts) {
   if (remoteExists(opts.upstreamRemote, opts)) return;
   runGit(["remote", "add", opts.upstreamRemote, opts.upstreamUrl], opts);
+}
+
+function fetchOriginTags(opts) {
+  if (opts.latestTag) {
+    const latestRef = `refs/tags/${opts.latestTag}`;
+    const args = ["fetch", opts.originRemote, "--tags", `+${latestRef}:${latestRef}`];
+    const result = runGitResult(args, opts);
+    if (result.status === 0) {
+      return;
+    }
+
+    const detail = (result.stderr || result.stdout || "").trim();
+    if (!detail.includes(`couldn't find remote ref ${latestRef}`)) {
+      throw new Error(`git ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`);
+    }
+  }
+
+  runGit(["fetch", opts.originRemote, "--tags"], opts);
 }
 
 function localBranchExists(branch, opts) {
@@ -316,7 +358,7 @@ function mergeLatest(opts) {
 
   if (opts.fetch) {
     runGit(["fetch", opts.upstreamRemote, opts.upstreamBranch, "--tags"], opts);
-    runGit(["fetch", opts.originRemote, "--tags"], opts);
+    fetchOriginTags(opts);
   }
 
   checkoutTargetBranch(opts);
@@ -340,7 +382,7 @@ function releaseCurrent(opts) {
   }
 
   if (opts.fetch) {
-    runGit(["fetch", opts.originRemote, "--tags"], opts);
+    fetchOriginTags(opts);
   }
 
   checkoutTargetBranch(opts);
@@ -381,6 +423,7 @@ module.exports = {
   serverPackageSourceForTag,
   readServerPackageSource,
   updateServerPackageSource,
+  fetchOriginTags,
   releaseCurrent,
   mergeLatest,
   main,

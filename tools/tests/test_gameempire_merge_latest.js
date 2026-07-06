@@ -15,6 +15,7 @@ const {
   serverPackageSourceForTag,
   readServerPackageSource,
   updateServerPackageSource,
+  fetchOriginTags,
   mergeLatest,
 } = require("../gameempire_merge_latest.js");
 
@@ -140,6 +141,48 @@ withTempGitRepo((cwd) => {
   assert.strictEqual(git(cwd, ["rev-parse", "HEAD"]), beforeHead);
   assert.strictEqual(readServerPackageSource(opts), beforeSource);
   assert.strictEqual(git(cwd, ["tag", "--list", `${DEFAULTS.tagPrefix}*`]), "");
+  assert.strictEqual(git(cwd, ["tag", "--list", DEFAULTS.latestTag]), "");
+});
+
+withTempGitRepo((cwd) => {
+  const origin = path.join(cwd, "origin.git");
+  const staleHead = git(cwd, ["rev-parse", "HEAD"]);
+  git(cwd, ["tag", DEFAULTS.latestTag, staleHead]);
+  git(cwd, ["clone", "--bare", ".", origin]);
+  git(cwd, ["remote", "add", DEFAULTS.originRemote, origin]);
+
+  const packagePath = path.join(cwd, "MCPForUnity", "package.json");
+  const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  packageJson.version = "9.6.7-beta.6";
+  fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
+  git(cwd, ["add", "MCPForUnity/package.json"]);
+  git(cwd, ["commit", "-m", "advance beta"]);
+
+  const remoteHead = git(cwd, ["rev-parse", "HEAD"]);
+  git(cwd, ["tag", "-f", DEFAULTS.latestTag, remoteHead]);
+  git(cwd, ["push", DEFAULTS.originRemote, DEFAULTS.targetBranch]);
+  git(cwd, ["push", DEFAULTS.originRemote, "-f", `refs/tags/${DEFAULTS.latestTag}`]);
+  git(cwd, ["tag", "-f", DEFAULTS.latestTag, staleHead]);
+
+  const plainFetch = spawnSync("git", ["fetch", DEFAULTS.originRemote, "--tags"], {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.notStrictEqual(plainFetch.status, 0);
+
+  silenceConsole(() => fetchOriginTags({ cwd, ...DEFAULTS, dryRun: false, quiet: true }));
+
+  assert.strictEqual(git(cwd, ["rev-parse", DEFAULTS.latestTag]), remoteHead);
+});
+
+withTempGitRepo((cwd) => {
+  const origin = path.join(cwd, "origin.git");
+  git(cwd, ["clone", "--bare", ".", origin]);
+  git(cwd, ["remote", "add", DEFAULTS.originRemote, origin]);
+
+  silenceConsole(() => fetchOriginTags({ cwd, ...DEFAULTS, dryRun: false, quiet: true }));
+
   assert.strictEqual(git(cwd, ["tag", "--list", DEFAULTS.latestTag]), "");
 });
 
