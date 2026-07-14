@@ -526,7 +526,14 @@ namespace MCPForUnity.Editor.Services
                 // cached timestamp grows stale even though the data is current.
                 // Re-stamp only in that case so the server-side staleness check
                 // still fires for genuinely unresponsive editors when focused.
-                if (!InternalEditorUtility.isApplicationActive)
+                //
+                // Fork/headless: a batch-mode editor (or a GUI editor on a virtual display) reports
+                // isApplicationActive=true, yet OnUpdate is likewise throttled/skipped once idle or in
+                // a steady Play Mode, so observed_at_unix_ms freezes while the snapshot data is current
+                // (the editor still answers tool calls, kept alive by HeadlessEditorPump). Treat batch
+                // mode like the backgrounded case so the staleness check does not false-positive and
+                // reject a responsive headless editor.
+                if (!InternalEditorUtility.isApplicationActive || Application.isBatchMode)
                 {
                     clone["observed_at_unix_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 }
