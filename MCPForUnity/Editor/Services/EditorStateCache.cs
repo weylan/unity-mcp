@@ -44,6 +44,16 @@ namespace MCPForUnity.Editor.Services
 
         private static JObject _cached;
 
+        // Fork/headless: automation editors — batch mode, or a GUI editor on a virtual display (Xvfb)
+        // opted in via UNITY_MCP_ALLOW_BATCH — report isApplicationActive=true, yet OnUpdate is
+        // throttled/skipped once idle or in a steady Play Mode, so observed_at_unix_ms freezes while the
+        // snapshot data is current (the editor still answers tool calls, kept alive by HeadlessEditorPump).
+        // Re-stamp on read for them, like the backgrounded case, so the server staleness check does not
+        // false-positive; interactive editors keep the stale signal for genuinely unresponsive states.
+        private static readonly bool HeadlessAutomation =
+            Application.isBatchMode
+            || !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("UNITY_MCP_ALLOW_BATCH"));
+
         private sealed class EditorStateSnapshot
         {
             [JsonProperty("schema_version")]
@@ -522,18 +532,12 @@ namespace MCPForUnity.Editor.Services
                 // which prevents unnecessary _cached rebuilds, not from caching the clone.
                 var clone = (JObject)_cached.DeepClone();
 
-                // When Unity is backgrounded, OnUpdate is throttled and the
-                // cached timestamp grows stale even though the data is current.
-                // Re-stamp only in that case so the server-side staleness check
-                // still fires for genuinely unresponsive editors when focused.
-                //
-                // Fork/headless: a batch-mode editor (or a GUI editor on a virtual display) reports
-                // isApplicationActive=true, yet OnUpdate is likewise throttled/skipped once idle or in
-                // a steady Play Mode, so observed_at_unix_ms freezes while the snapshot data is current
-                // (the editor still answers tool calls, kept alive by HeadlessEditorPump). Treat batch
-                // mode like the backgrounded case so the staleness check does not false-positive and
-                // reject a responsive headless editor.
-                if (!InternalEditorUtility.isApplicationActive || Application.isBatchMode)
+                // When Unity is backgrounded, OnUpdate is throttled and the cached timestamp grows
+                // stale even though the data is current. Re-stamp in that case, and for headless
+                // automation editors (see HeadlessAutomation), so the server-side staleness check does
+                // not false-positive; a focused interactive editor keeps the stale signal so genuinely
+                // unresponsive editors are still detected.
+                if (!InternalEditorUtility.isApplicationActive || HeadlessAutomation)
                 {
                     clone["observed_at_unix_ms"] = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 }
