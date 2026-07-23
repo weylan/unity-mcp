@@ -1,3 +1,8 @@
+import json
+import subprocess
+import sys
+from pathlib import Path
+from textwrap import dedent
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -125,3 +130,52 @@ def test_global_custom_tool_registers_visibility_tags():
     service.register_global_tools([definition])
 
     assert mcp.tool_calls[-1]["tags"] == {"tool:my_tool", "group:ui"}
+
+
+def test_global_custom_tool_supports_required_parameter_after_optional_parameters():
+    script = dedent(
+        """
+        import asyncio
+        import json
+
+        from fastmcp import FastMCP
+
+        from models.models import ToolDefinitionModel, ToolParameterModel
+        from services.custom_tool_service import CustomToolService
+
+
+        async def main():
+            mcp = FastMCP("custom-tool-signature-test")
+            service = CustomToolService(mcp)
+            definition = ToolDefinitionModel(
+                name="mixed_parameter_tool",
+                description="Tool with Unity-declared parameter order",
+                parameters=[
+                    ToolParameterModel(name="action_id", required=False),
+                    ToolParameterModel(name="probe_id", required=False),
+                    ToolParameterModel(name="args", type="object", required=True),
+                ],
+            )
+
+            service.register_global_tools([definition])
+
+            tool = next(tool for tool in await mcp.list_tools() if tool.name == definition.name)
+            print(json.dumps(tool.parameters))
+
+
+        asyncio.run(main())
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    schema = json.loads(completed.stdout)
+    assert list(schema["properties"]) == ["action_id", "probe_id", "args"]
+    assert schema["required"] == ["args"]
