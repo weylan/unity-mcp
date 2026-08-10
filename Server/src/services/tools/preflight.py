@@ -30,6 +30,7 @@ async def preflight(
     requires_no_tests: bool = False,
     wait_for_no_compile: bool = False,
     refresh_if_dirty: bool = False,
+    editor_lock_token: str | None = None,
     max_wait_s: float = 30.0,
 ) -> MCPResponse | None:
     """
@@ -66,7 +67,14 @@ async def preflight(
         if isinstance(assets, dict) and assets.get("external_changes_dirty") is True:
             try:
                 from services.tools.refresh_unity import refresh_unity
-                await refresh_unity(ctx, mode="if_dirty", scope="all", compile="request", wait_for_ready=True)
+                await refresh_unity(
+                    ctx,
+                    mode="if_dirty",
+                    scope="all",
+                    compile="request",
+                    wait_for_ready=True,
+                    editor_lock_token=editor_lock_token,
+                )
             except Exception:
                 # Best-effort only; fall through to normal tool dispatch.
                 pass

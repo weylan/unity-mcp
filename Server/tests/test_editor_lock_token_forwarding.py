@@ -165,3 +165,43 @@ async def test_refresh_unity_forwards_editor_lock_token(monkeypatch):
 
     assert captured["command_type"] == "refresh_unity"
     assert captured["params"]["editor_lock_token"] == "tok-1"
+
+
+@pytest.mark.asyncio
+async def test_preflight_dirty_refresh_forwards_editor_lock_token(monkeypatch):
+    import services.tools.preflight as mod
+    import services.resources.editor_state as editor_state_mod
+    import services.tools.refresh_unity as refresh_mod
+
+    refresh_calls: list[dict[str, object]] = []
+
+    async def fake_get_editor_state(ctx):
+        return {
+            "success": True,
+            "data": {
+                "assets": {"external_changes_dirty": True},
+                "tests": {"is_running": False},
+                "compilation": {
+                    "is_compiling": False,
+                    "is_domain_reload_pending": False,
+                },
+            },
+        }
+
+    async def fake_refresh_unity(ctx, **kwargs):
+        refresh_calls.append(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(mod, "_in_pytest", lambda: False)
+    monkeypatch.setattr(editor_state_mod, "get_editor_state", fake_get_editor_state)
+    monkeypatch.setattr(refresh_mod, "refresh_unity", fake_refresh_unity)
+
+    result = await mod.preflight(
+        SimpleNamespace(),
+        refresh_if_dirty=True,
+        editor_lock_token="tok-preflight",
+    )
+
+    assert result is None
+    assert len(refresh_calls) == 1
+    assert refresh_calls[0]["editor_lock_token"] == "tok-preflight"

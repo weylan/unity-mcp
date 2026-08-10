@@ -1,9 +1,58 @@
 using System.Collections.Generic;
+using System;
 using System.Threading.Tasks;
 using UnityEditor.TestTools.TestRunner.Api;
 
 namespace MCPForUnity.Editor.Services
 {
+    internal readonly struct TestJobIdentity : IEquatable<TestJobIdentity>
+    {
+        public TestJobIdentity(string jobId, long generation)
+        {
+            JobId = jobId;
+            Generation = generation;
+        }
+
+        public string JobId { get; }
+        public long Generation { get; }
+
+        public bool Equals(TestJobIdentity other)
+            => string.Equals(JobId, other.JobId, StringComparison.Ordinal)
+               && Generation == other.Generation;
+
+        public override bool Equals(object obj)
+            => obj is TestJobIdentity other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                return ((JobId != null ? StringComparer.Ordinal.GetHashCode(JobId) : 0) * 397)
+                       ^ Generation.GetHashCode();
+            }
+        }
+
+        public static bool operator ==(TestJobIdentity left, TestJobIdentity right) => left.Equals(right);
+        public static bool operator !=(TestJobIdentity left, TestJobIdentity right) => !left.Equals(right);
+
+        public override string ToString() => $"{JobId ?? "(none)"}@{Generation}";
+    }
+
+    /// <summary>
+    /// Internal owner-aware execution contract used by asynchronous MCP test jobs. The public
+    /// <see cref="ITestRunnerService"/> surface remains unchanged for existing callers.
+    /// </summary>
+    internal interface IJobBoundTestRunnerService
+    {
+        Task<TestRunResult> RunTestsForJobAsync(
+            TestJobIdentity owner,
+            TestMode mode,
+            TestFilterOptions filterOptions = null);
+
+        void BindPhysicalOwner(TestJobIdentity owner);
+        void ClearPhysicalOwner(TestJobIdentity owner);
+    }
+
     /// <summary>
     /// Options for filtering which tests to run.
     /// All properties are optional - null or empty arrays are ignored.

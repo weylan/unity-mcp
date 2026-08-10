@@ -328,7 +328,10 @@ def execute_menu(menu_path: str):
 @click.option(
     "--clear-stuck",
     is_flag=True,
-    help="Clear an orphaned running job that is blocking new runs, instead of starting a run."
+    help=(
+        "Logically clear a stuck job instead of starting a run. This cannot release a still-running "
+        "physical TestRunner fence; if safe_to_start_new_run=false, wait for terminal state or restart Unity."
+    )
 )
 @handle_unity_errors
 def run_tests(mode: str, async_mode: bool, wait: Optional[int], details: bool, failed_only: bool, clear_stuck: bool):

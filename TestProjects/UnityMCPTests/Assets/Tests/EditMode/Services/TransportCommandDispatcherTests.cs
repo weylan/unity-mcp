@@ -11,6 +11,7 @@ using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.TestTools;
+using MCPForUnity.Editor.Services;
 
 namespace MCPForUnityTests.Editor.Services
 {
@@ -236,6 +237,112 @@ namespace MCPForUnityTests.Editor.Services
             Assert.IsTrue(WaitUntil(() => task.IsCompleted), "Async command should complete its TCS.");
             Assert.IsTrue(WaitUntil(() => TransportCommandDispatcher.PendingCountForTests == 0),
                 "Cleanup fallback must remove pending even if delayCall registration throws.");
+        }
+
+        [Test]
+        public void DirectRunTests_TransfersEffectiveLockAndRegistryExceptionDoesNotLeak()
+        {
+            string oldLock = Environment.GetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK");
+            string oldGuard = Environment.GetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_GUARD");
+            var scheduled = new List<Action>();
+            var runner = new ControlledJobBoundTestRunner();
+            Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", "on");
+            Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_GUARD", "block");
+            MCPServiceLocator.Reset();
+            TestJobManager.ResetForTests(clearSessionState: true);
+            SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+            TestRunStatus.ResetForTests();
+            MCPServiceLocator.Register<ITestRunnerService>(runner);
+            TestJobManager.DelayCallSchedulerForTests = action => scheduled.Add(action);
+            TransportCommandDispatcher.SlicingActiveOverrideForTests = () => true;
+
+            try
+            {
+                var task = TransportCommandDispatcher.ExecuteCommandJsonAsync(
+                    CommandJson("run_tests", new JObject
+                    {
+                        ["mode"] = "EditMode",
+                        ["testNames"] = new JArray("Dispatcher.Red")
+                    }),
+                    CancellationToken.None);
+
+                TransportCommandDispatcher.ProcessQueueForTests();
+                JObject response = JObject.Parse(WaitForTask(task));
+                Assert.AreEqual("success", response.Value<string>("status"), response.ToString());
+                Assert.AreEqual("queued", response["result"]?["data"]?.Value<string>("status"));
+                Assert.AreEqual(0, runner.InvocationCount);
+                Assert.AreEqual(1, scheduled.Count);
+                Assert.IsTrue(SharedEditorOperationLock.GetState().IsAttachedToJob,
+                    "Dispatcher auto-lock must belong to the queued job before command cleanup.");
+
+                TestJobManager.ResetForTests(clearSessionState: true);
+                SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+                TransportCommandDispatcher.CommandExecutorOverrideForTests = (_, __, ___) =>
+                    throw new InvalidOperationException("registry probe");
+
+                var failing = TransportCommandDispatcher.ExecuteCommandJsonAsync(
+                    CommandJson("run_tests", new JObject
+                    {
+                        ["mode"] = "EditMode",
+                        ["testNames"] = new JArray("Dispatcher.Throw")
+                    }),
+                    CancellationToken.None);
+                LogAssert.Expect(LogType.Error, new Regex("Error processing command: registry probe"));
+                TransportCommandDispatcher.ProcessQueueForTests();
+                JObject failure = JObject.Parse(WaitForTask(failing));
+
+                Assert.AreEqual("error", failure.Value<string>("status"));
+                Assert.IsFalse(SharedEditorOperationLock.GetState().Locked,
+                    "A synchronous registry exception must not leak an unattached auto-lock.");
+            }
+            finally
+            {
+                TransportCommandDispatcher.CommandExecutorOverrideForTests = null;
+                TestJobManager.DelayCallSchedulerForTests = null;
+                TestJobManager.ResetForTests(clearSessionState: true);
+                SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+                TestRunStatus.ResetForTests();
+                MCPServiceLocator.Reset();
+                Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", oldLock);
+                Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_GUARD", oldGuard);
+            }
+        }
+
+        [Test]
+        public void AttachedToken_IsReportedAsPhysicalFenceInsteadOfInvalidToken()
+        {
+            string oldLock = Environment.GetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK");
+            Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", "on");
+            SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+            TransportCommandDispatcher.SlicingActiveOverrideForTests = () => true;
+            var acquired = SharedEditorOperationLock.TryAcquire("client", "suite", isExplicit: true);
+            Assert.IsTrue(SharedEditorOperationLock.AttachToJob(
+                acquired.Token,
+                new TestJobIdentity("physical-owner", 4)));
+
+            try
+            {
+                var task = TransportCommandDispatcher.ExecuteCommandJsonAsync(
+                    CommandJson("run_tests", new JObject
+                    {
+                        ["mode"] = "EditMode",
+                        ["testNames"] = new JArray("Dispatcher.Fenced"),
+                        ["editorLockToken"] = acquired.Token,
+                    }),
+                    CancellationToken.None);
+                TransportCommandDispatcher.ProcessQueueForTests();
+                JObject response = JObject.Parse(WaitForTask(task));
+
+                Assert.AreEqual("success", response.Value<string>("status"), response.ToString());
+                Assert.AreEqual(SharedEditorOperationLock.BusyCode,
+                    response["result"]?.Value<string>("code"));
+                Assert.IsTrue(response["result"]?["data"]?.Value<bool>("fence_active") ?? false);
+            }
+            finally
+            {
+                SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+                Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", oldLock);
+            }
         }
 
         private static string CommandJson(string type, JObject parameters)

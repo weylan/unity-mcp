@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Collections.Generic;
 using NUnit.Framework;
 using MCPForUnity.Editor.Constants;
 using MCPForUnity.Editor.Services;
@@ -149,6 +150,63 @@ namespace MCPForUnity.Editor.Tests.EditMode.Services
                 {
                     EditorPrefs.DeleteKey(key);
                 }
+            }
+        }
+
+        [Test]
+        public void DiscoverAllTools_MatchesForkBaselineAt9d8751_Exactly36Names()
+        {
+            var expected = new[]
+            {
+                "batch_execute", "execute_code", "execute_menu_item", "find_gameobjects",
+                "generate_audio", "generate_image", "generate_model", "get_test_job",
+                "import_model", "import_model_file", "manage_animation", "manage_asset",
+                "manage_build", "manage_camera", "manage_components", "manage_editor",
+                "manage_editor_lock", "manage_gameobject", "manage_graphics", "manage_material",
+                "manage_packages", "manage_physics", "manage_prefabs", "manage_probuilder",
+                "manage_profiler", "manage_scene", "manage_script", "manage_scriptable_object",
+                "manage_shader", "manage_texture", "manage_ui", "manage_vfx", "read_console",
+                "refresh_unity", "run_tests", "unity_reflect"
+            };
+
+            using var service = new ToolDiscoveryService();
+            string[] actual = service.DiscoverAllTools()
+                .Where(tool => tool.IsBuiltIn)
+                .Select(tool => tool.Name)
+                .OrderBy(name => name, System.StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.AreEqual(36, actual.Length);
+            CollectionAssert.AreEqual(expected, actual,
+                "The local lock/visibility adaptation must not add, hide, or rename a built-in tool.");
+        }
+
+        [Test]
+        public void UnlistedBuiltInTool_UsesEditorPrefsThenMetadataFallback()
+        {
+            using var service = new ToolDiscoveryService();
+            var tool = service.DiscoverAllTools()
+                .FirstOrDefault(item => item.IsBuiltIn
+                                        && !item.AutoRegister
+                                        && !ProjectToolConfig.Instance.HasOverride(item.Name));
+            Assert.NotNull(tool, "Expected an unlisted built-in tool with no project override.");
+
+            string key = EditorPrefKeys.ToolEnabledPrefix + tool.Name;
+            bool hadKey = EditorPrefs.HasKey(key);
+            bool original = hadKey && EditorPrefs.GetBool(key, true);
+            try
+            {
+                EditorPrefs.SetBool(key, true);
+                Assert.IsTrue(service.IsToolEnabled(tool.Name), "EditorPrefs must be used when present.");
+
+                EditorPrefs.DeleteKey(key);
+                Assert.AreEqual(tool.AutoRegister, service.IsToolEnabled(tool.Name),
+                    "Without a project override or EditorPrefs value, metadata is the fallback.");
+            }
+            finally
+            {
+                if (hadKey) EditorPrefs.SetBool(key, original);
+                else EditorPrefs.DeleteKey(key);
             }
         }
     }

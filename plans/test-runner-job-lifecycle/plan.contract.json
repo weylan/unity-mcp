@@ -1,0 +1,407 @@
+{
+  "schema_version": 2,
+  "lifecycle_state": "active",
+  "task_type": "bugfix",
+  "scope": {
+    "revision": 5,
+    "revision_note": "Revision 5 keeps the approved revision-4 lifecycle, lock, batch and visibility design unchanged and absorbs the final P2 documentation finding by adding the Website run_tests reference and CLI clear-stuck help. Earlier authorization remains stale for this expanded documentation scope.",
+    "paths": [
+      { "path": "plans/test-runner-job-lifecycle/plan.md", "change": { "kind": "add", "note": "Add the human-readable revision-5 plan." } },
+      { "path": "plans/test-runner-job-lifecycle/plan.contract.json", "change": { "kind": "add", "note": "Add the canonical machine-readable revision-5 contract." } },
+      { "path": "MCPForUnity/Editor/Services/TestJobManager.cs", "change": { "kind": "modify", "note": "Persist explicit lifecycle phases, physical owner identity, init anchor and job lock ownership." } },
+      { "path": "MCPForUnity/Editor/Services/TestRunnerService.cs", "change": { "kind": "modify", "note": "Bind callbacks to an owner and notify only after Execute returns." } },
+      { "path": "MCPForUnity/Editor/Services/ITestRunnerService.cs", "change": { "kind": "modify", "note": "Add a narrow internal job-bound runner contract while retaining the public interface." } },
+      { "path": "MCPForUnity/Editor/Services/TestRunStatus.cs", "change": { "kind": "modify", "note": "Rehydrate and clear busy state from matching persisted physical owner transitions." } },
+      { "path": "MCPForUnity/Editor/Services/EditorStateCache.cs", "change": { "kind": "modify", "note": "Ensure lifecycle restoration completes before the first readiness snapshot observes test state." } },
+      { "path": "MCPForUnity/Editor/Services/SharedEditorOperationLock.cs", "change": { "kind": "modify", "note": "Persist explicit command locks across reload, attach command locks to test jobs, reject ordinary reuse while attached, and release only on matching physical terminal." } },
+      { "path": "MCPForUnity/Editor/Services/SharedEditorCommandGuard.cs", "change": { "kind": "modify", "note": "Recognize clear_stuck as recovery rather than an unfiltered test start." } },
+      { "path": "MCPForUnity/Editor/Services/Transport/TransportCommandDispatcher.cs", "change": { "kind": "modify", "note": "Eagerly restore lifecycle state, transfer direct-command effective tokens, reject attached-token reuse, and close command exception lock leaks." } },
+      { "path": "MCPForUnity/Editor/Tools/BatchExecute.cs", "change": { "kind": "modify", "note": "Require a run_tests start to be the final executable item and transfer the outer effective lock token without executing later commands." } },
+      { "path": "MCPForUnity/Editor/Tools/RunTests.cs", "change": { "kind": "modify", "note": "Queue asynchronous dispatch and expose safe clear_stuck result details." } },
+      { "path": "MCPForUnity/Editor/Tools/ManageEditorLock.cs", "change": { "kind": "modify", "note": "Reject force_release while a physical test owner is attached and report that the fence remains active." } },
+      { "path": "Server/src/services/tools/preflight.py", "change": { "kind": "modify", "note": "Forward an optional explicit lock token to nested refresh_unity." } },
+      { "path": "Server/src/services/tools/run_tests.py", "change": { "kind": "modify", "note": "Preserve explicit tokens through preflight and clear_stuck payloads." } },
+      { "path": "Server/src/services/tools/manage_editor_lock.py", "change": { "kind": "modify", "note": "Document attached-owner force_release refusal and its recovery semantics." } },
+      { "path": "Server/src/cli/commands/editor.py", "change": { "kind": "modify", "note": "Clarify that --clear-stuck is logical recovery and cannot release a still-running physical TestRunner fence." } },
+      { "path": "Website/docs/reference/tools/testing/run_tests.md", "change": { "kind": "modify", "note": "Document safe_to_start_new_run and the wait-or-restart requirement while a physical TestRunner owner remains." } },
+      { "path": "Server/tests/integration/test_run_tests_async.py", "change": { "kind": "modify", "note": "Cover clear_stuck and preflight token propagation." } },
+      { "path": "Server/tests/test_editor_lock_token_forwarding.py", "change": { "kind": "modify", "note": "Cover run_tests nested refresh and recovery token lineage." } },
+      { "path": "Server/tests/test_tool_annotations.py", "change": { "kind": "modify", "note": "Explicitly pin run_tests, manage_gameobject and execute_code as gated/destructive without changing the approved sets." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerInitTimeoutTests.cs", "change": { "kind": "modify", "note": "Replace creation-time timeout assumptions with phase-anchor assertions." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs", "change": { "kind": "add", "note": "Add production-entry lifecycle, owner, persistence, clear and reload tests." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs.meta", "change": { "kind": "add", "note": "Add Unity meta for lifecycle tests." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestRunnerServiceJobBindingTests.cs", "change": { "kind": "add", "note": "Add real-service seam tests for semaphore and Execute-return ordering." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestRunnerServiceJobBindingTests.cs.meta", "change": { "kind": "add", "note": "Add Unity meta for job-binding tests." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/SharedEditorOperationLockTests.cs", "change": { "kind": "add", "note": "Add command-to-job lock attachment tests." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/SharedEditorOperationLockTests.cs.meta", "change": { "kind": "add", "note": "Add Unity meta for operation lock tests." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/SharedEditorCommandGuardTests.cs", "change": { "kind": "modify", "note": "Cover recovery action guard policy." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TransportCommandDispatcherTests.cs", "change": { "kind": "modify", "note": "Cover direct and batch token transfer plus exception cleanup." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/ToolDiscoveryServiceTests.cs", "change": { "kind": "modify", "note": "Characterize the exact 36-name fork baseline and unlisted-tool fallback semantics through production discovery." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Tools/RunTestsTests.cs", "change": { "kind": "modify", "note": "Cover immediate job response through the real tool entry." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Tools/BatchExecuteTests.cs", "change": { "kind": "add", "note": "Cover run_tests-last validation and outer-lock transfer with a controllable later-command gate." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Tools/BatchExecuteTests.cs.meta", "change": { "kind": "add", "note": "Add Unity meta for batch lifecycle tests." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Tools/ManageEditorLockTests.cs", "change": { "kind": "add", "note": "Cover force_release refusal while a physical test owner owns the fence." } },
+      { "path": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Tools/ManageEditorLockTests.cs.meta", "change": { "kind": "add", "note": "Add Unity meta for lock-management tests." } }
+    ],
+    "context_paths": [
+      "Server/tests/test_per_tool_visibility.py",
+      "MCPForUnity/Editor/Services/ProjectToolConfig.cs",
+      "MCPForUnity/Editor/Services/ToolDiscoveryService.cs"
+    ]
+  },
+  "root_cause_gate": {
+    "applicable": true,
+    "trigger": "A real run_tests call held the command auto-lock for about 29.5 seconds, was then auto-failed against a 15-second job-creation clock, and later emitted genuine TestRunner callbacks.",
+    "agent": "mcp_test_timeout_root_cause",
+    "report_id": "Root Cause Gate #1",
+    "hypotheses": [
+      "StartedUnixMs is incorrectly used as the AwaitingRunStarted clock even though synchronous Execute and semaphore delay occur before that state.",
+      "Callbacks mutate the global current job rather than a persisted physical owner identity.",
+      "Command-scoped auto-lock cleanup releases run_tests protection when the job-start response completes, before the physical TestRunner run terminates.",
+      "The upstream clear_stuck parameter is indistinguishable from an unfiltered start to the private guard and lock classifier."
+    ],
+    "side_effects": [
+      "A logical timeout or clear that releases the physical owner can let late callbacks corrupt a replacement job.",
+      "A domain reload can erase in-memory TestRunStatus and operation-lock state while persisted TestRunner ownership remains.",
+      "Changing the project visibility map to strict deny-by-default would be a separate behavior migration and is not justified by this upstream range."
+    ],
+    "findings": [
+      "Use persisted phases and a separate AwaitingRunStarted anchor; only an explicit Execute-return notification may start the initialization budget.",
+      "Persist one physical owner identity before Execute and validate it on every callback and terminal path.",
+      "Attach the effective dispatcher or batch lock to the job and retain it until a matching physical terminal; make clear_stuck a parameter-aware recovery path.",
+      "Forward explicit tokens through Python preflight/refresh and clear_stuck while preserving the existing exact tool visibility and annotation sets."
+    ]
+  },
+  "plan_review_findings": {
+    "round": 2,
+    "verdict": "PASS",
+    "p0_count": 0,
+    "p1_count": 0,
+    "dispositions": [
+      {
+        "id": "F1-final-user-doc-scope",
+        "severity": "P2",
+        "disposition": "accept",
+        "resolution": "Add the Website run_tests reference and CLI --clear-stuck help to scope; both must state that logical recovery does not release the physical fence and safe_to_start_new_run=false requires waiting for matching terminal state or restarting Unity."
+      }
+    ],
+    "prior_findings": [
+      "Round-1 F1 attached-token ordinary reuse is closed by fail-closed reentry and release semantics plus an exclusive RED.",
+      "Round-1 F2 explicit-lock preflight reload is closed by persisting only unexpired explicit command locks.",
+      "Round-1 F3 batch boundary is closed by making a normal run_tests start the final executable item.",
+      "Round-1 F4 terminal persistence is closed by the durable-write release barrier.",
+      "Round-1 F5 eager first-consumer and V1 restore are closed with no-replay REDs.",
+      "Round-1 F6 36-to-36 production discovery and visibility/risk characterization is closed.",
+      "Round-1 F7 force_release and clear_stuck behavior is functionally closed; revision 5 closes its remaining P2 user-document scope."
+    ]
+  },
+  "phase_1_5": {
+    "decision": "required",
+    "trigger_evidence": {
+      "new_manager": [],
+      "new_ui_panel": [],
+      "new_serialized_field": [
+        "Persist TestJob phase, AwaitingRunStarted anchor, generation, physical owner and attached-lock metadata in SessionState V2.",
+        "Persist only unexpired explicit command locks (token, owner, expiry and optional attached job identity) so dirty-preflight reload can resume; never persist an unattached auto lock."
+      ],
+      "new_event_key": [],
+      "new_inheritance": [
+        "Add a narrow internal job-bound runner interface implemented by TestRunnerService without breaking public ITestRunnerService callers."
+      ],
+      "complex_gate_multi_source": [
+        "Correctness spans Python preflight, dispatcher, batch execution, command guard, operation lock, TestJobManager, TestRunnerService callbacks and SessionState reload."
+      ],
+      "complex_gate_authority_barrier": [
+        "Only a force-persisted physical owner may execute TestRunner side effects or consume callbacks; only its matching terminal may release the fence."
+      ],
+      "complex_gate_side_effect": [
+        "A wrong release can overlap shared Editor mutations or route old callbacks into a new test job."
+      ]
+    },
+    "exemption": { "code": "", "rationale": "", "evidence_refs": [] },
+    "framework_integration_points": [
+      "Keep public MCP tool names, request field spellings and the immediate job_id response compatible.",
+      "Keep public ITestRunnerService usable; put owner-aware execution on an internal interface.",
+      "Keep ProjectToolConfig fallback semantics and exact ToolAnnotations allowlist unchanged.",
+      "Use EditorApplication.delayCall for Unity-main-thread dispatch; never Task.Run Unity APIs.",
+      "Treat SessionState critical owner and terminal writes as write-ahead barriers rather than best-effort telemetry.",
+      "Use TestJobManager as the existing-class InitializeOnLoad bootstrap, and call its idempotent EnsureInitialized before TestRunStatus/readiness/guard consumers observe state.",
+      "After a lock is attached to a physical owner, only lifecycle operations may inspect or detach it; ordinary dispatcher/batch reentry with the same token fails closed.",
+      "A batch may contain a normal run_tests start only as its final executable item; clear_stuck remains a recovery action rather than a start."
+    ],
+    "planned_files": [
+      "MCPForUnity/Editor/Services/TestJobManager.cs",
+      "MCPForUnity/Editor/Services/TestRunnerService.cs",
+      "MCPForUnity/Editor/Services/TestRunStatus.cs",
+      "MCPForUnity/Editor/Services/EditorStateCache.cs",
+      "MCPForUnity/Editor/Services/SharedEditorOperationLock.cs",
+      "MCPForUnity/Editor/Services/Transport/TransportCommandDispatcher.cs",
+      "MCPForUnity/Editor/Tools/BatchExecute.cs",
+      "MCPForUnity/Editor/Tools/RunTests.cs",
+      "MCPForUnity/Editor/Tools/ManageEditorLock.cs",
+      "Server/src/services/tools/preflight.py",
+      "Server/src/services/tools/run_tests.py",
+      "Server/src/services/tools/manage_editor_lock.py",
+      "Server/src/cli/commands/editor.py",
+      "Website/docs/reference/tools/testing/run_tests.md"
+    ],
+    "test_interfaces": [
+      "MCPServiceLocator.Register with a fake runner for production RunTests entry tests.",
+      "Controllable EditorApplication delay scheduler and Unix clock seams reset in TearDown.",
+      "A narrow TestRunnerService semaphore/Execute seam proving notification order without nesting a real TestRunner run.",
+      "SessionState critical-persist failure injection for both owner claim and physical terminal, with exact persisted and in-memory state assertions.",
+      "SharedEditorOperationLock snapshots, reload seams and job-attachment operations without exposing tokens in public responses.",
+      "A first-consumer reload test that seeds SessionState, avoids touching TestJobManager, then reads readiness and proves owner, callbacks, TestRunStatus and lock were restored first.",
+      "A batch command gate that proves no item after a run_tests start can execute or reuse its transferred token.",
+      "Production ToolDiscoveryService characterization pinned to the exact 36 names at local baseline 9d8751f18315e26d8cd97a4ab54d844d43b85fad."
+    ],
+    "unknowns": [
+      "resolved: clear_stuck is a safe logical recovery action; without physical completion evidence it preserves the fence and reports restart_required_if_orphaned.",
+      "resolved: the local fork has exactly 36 C# tool names both at 9d8751f18315e26d8cd97a4ab54d844d43b85fad and merged HEAD, with empty added/removed sets; the earlier 35 count omitted manage_editor_lock.",
+      "resolved: manage_gameobject structured component payload stays under the existing destructive-tool and non-long-running lock policy.",
+      "none: Unity live validation remains intentionally deferred until separate R6 authorization."
+    ],
+    "conflict_precheck": [
+      "Do not rerun make merge, push, tag or release while implementing this revision.",
+      "Do not start Unity/MCP/TestRunner validation before separate user confirmation under R6.",
+      "Do not change .mcp-for-unity.json or strict-default visibility semantics.",
+      "Do not release a persisted physical owner merely because logical init timeout or clear_stuck fired.",
+      "Do not allow force_release or reuse of the original explicit token to bypass an attached physical-owner fence."
+    ]
+  },
+  "p10": {
+    "applicable": true,
+    "state_machine": true,
+    "ui_timing": false,
+    "business_invariants": [
+      {
+        "id": "BI-TEST-SINGLE-PHYSICAL-OWNER",
+        "statement": "At most one force-persisted TestRunner owner identity (job_id + generation) exists. Every callback, task completion, reload recovery and terminal mutation names and compares that identity; no path guesses ownership from the newest logical job.",
+        "state_fields": ["TestJob.Generation", "PersistedState.physical_owner", "TestRunnerService.callback_owner"]
+      },
+      {
+        "id": "BI-TEST-INIT-CLOCK",
+        "statement": "Job creation, queueing, semaphore wait and synchronous Execute duration never consume init_timeout. The budget starts only on an explicit matching Execute-return transition to AwaitingRunStarted; RunStarted with unknown total still transitions to Running.",
+        "state_fields": ["TestJob.Phase", "TestJob.StartedUnixMs", "TestJob.AwaitingRunStartedSinceUnixMs", "TestJob.TotalTests"]
+      },
+      {
+        "id": "BI-TEST-JOB-LOCK",
+        "statement": "The effective command or batch lock token is attached to the persisted test job before the start response completes. Command cleanup cannot release an attached lock; ordinary commands cannot Reenter or release it; only matching lifecycle recovery may inspect it and only a durably persisted physical terminal detaches or releases it. An unexpired explicit command lock survives dirty-preflight domain reload, while an unattached auto lock never does. Unattached locks are released on sync and async failures.",
+        "state_fields": ["SharedEditorOperationLock.current", "SharedEditorOperationLock.kind", "SharedEditorOperationLock.expires_at", "SharedEditorOperationLock.job_owner_id", "TestJob.AttachedLockToken"]
+      },
+      {
+        "id": "BI-TEST-TERMINAL-DURABILITY",
+        "statement": "Matching physical completion is first written durably with the owner identity and terminal state. If that critical write fails, in-memory owner/status, TestRunStatus, callback binding and attached lock remain fenced and no queued successor is dispatched.",
+        "state_fields": ["TestJob.Phase", "TestJob.Status", "PersistedState.physical_owner", "TestRunStatus.IsRunning", "SharedEditorOperationLock.job_owner_id"]
+      },
+      {
+        "id": "BI-TEST-SAFE-RECOVERY",
+        "statement": "clear_stuck bypasses ordinary start filters, preflight and command-lock acquisition, but a timeout or clear never pretends to cancel an unproven physical run. It may terminate a queued ownerless job; otherwise it retains owner, TestRunStatus and lock and reports safe_to_start_new_run=false. manage_editor_lock force_release refuses while such an owner is attached and reports that the fence remains active.",
+        "state_fields": ["TestJob.Status", "TestJob.Phase", "PersistedState.physical_owner", "TestRunStatus.IsRunning"]
+      },
+      {
+        "id": "BI-TEST-RELOAD-BOOTSTRAP",
+        "statement": "After domain reload, the first readiness, PlayMode-options or command-guard consumer observes state only after an idempotent eager bootstrap restores persisted physical owner, callback registration, TestRunStatus and attached lock. Legacy V1 current-running state becomes a conservative owner with no init anchor and never replays Execute.",
+        "state_fields": ["PersistedState.schema_version", "PersistedState.physical_owner", "TestRunStatus.IsRunning", "SharedEditorOperationLock.job_owner_id", "TestRunnerService.callback_owner"]
+      },
+      {
+        "id": "BI-TEST-BATCH-BOUNDARY",
+        "statement": "A normal run_tests start is the last executable batch item. Validation rejects any later item before execution; after a successful job start the outer token belongs only to that job and the batch cannot continue or reuse it. clear_stuck is not classified as a start.",
+        "state_fields": ["BatchExecute.command_index", "SharedEditorOperationLock.job_owner_id", "run_tests.internal_effective_lock_token"]
+      },
+      {
+        "id": "BI-TEST-API-VISIBILITY",
+        "statement": "The exact production C# tool-name set remains the 36 names present at local baseline 9d8751f18315e26d8cd97a4ab54d844d43b85fad, ProjectToolConfig remains an override map whose unlisted tools use EditorPrefs then metadata, manage_gameobject remains outside the C# high-risk lock classifier, run_tests/manage_gameobject/execute_code remain gated destructive server tools, group:* and tool:* visibility tags remain merged, and explicit editor_lock_token flows through dirty preflight refresh and clear_stuck without changing calls that omit it.",
+        "state_fields": ["ProjectToolConfig.tools", "FastMCP.ToolAnnotations", "run_tests.editor_lock_token", "preflight.editor_lock_token"]
+      }
+    ],
+    "write_entry_table": [
+      {
+        "id": "WE-TEST-QUEUE",
+        "invariant_refs": ["BI-TEST-SINGLE-PHYSICAL-OWNER", "BI-TEST-JOB-LOCK"],
+        "source_path": "MCPForUnity/Editor/Tools/RunTests.cs",
+        "entry": "RunTests.HandleCommand creates and force-persists a Queued job, attaches the effective lock, schedules main-thread dispatch and returns job_id before runner invocation.",
+        "writes": ["TestJob.Phase", "PersistedState.current_job_id", "SharedEditorOperationLock.job_owner_id"],
+        "red_test_method": "MCPForUnityTests.Editor.Tools.RunTestsTests.HandleCommand_ReturnsQueuedJobBeforeRunnerInvocationAndAttachesAutoLock",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Tools/RunTestsTests.cs"
+      },
+      {
+        "id": "WE-TEST-DISPATCH-CLAIM",
+        "invariant_refs": ["BI-TEST-SINGLE-PHYSICAL-OWNER", "BI-TEST-INIT-CLOCK"],
+        "source_path": "MCPForUnity/Editor/Services/TestJobManager.cs",
+        "entry": "TryDispatchQueuedJob atomically claims owner and Dispatching, force-persists that state, then and only then invokes the job-bound runner; a failed critical persist invokes no runner.",
+        "writes": ["TestJob.Phase", "TestJob.Generation", "PersistedState.physical_owner"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.Dispatch_ForcePersistsOwnerBeforeRunnerAndPersistenceFailureDoesNotExecute",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs"
+      },
+      {
+        "id": "WE-TEST-EXECUTE-RETURN",
+        "invariant_refs": ["BI-TEST-INIT-CLOCK", "BI-TEST-SINGLE-PHYSICAL-OWNER"],
+        "source_path": "MCPForUnity/Editor/Services/TestRunnerService.cs",
+        "entry": "The production RunTestsAsync path sends OnExecuteReturned(identity) only after its semaphore is acquired and TestRunnerApi.Execute has returned; the manager CASes Dispatching to AwaitingRunStarted and writes the anchor.",
+        "writes": ["TestJob.Phase", "TestJob.AwaitingRunStartedSinceUnixMs"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.TestRunnerServiceJobBindingTests.OperationLockContended_DoesNotEnterAwaitingUntilExecuteActuallyReturns",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestRunnerServiceJobBindingTests.cs"
+      },
+      {
+        "id": "WE-TEST-CALLBACK-PROGRESS",
+        "invariant_refs": ["BI-TEST-SINGLE-PHYSICAL-OWNER", "BI-TEST-INIT-CLOCK"],
+        "source_path": "MCPForUnity/Editor/Services/TestJobManager.cs",
+        "entry": "Identity-aware RunStarted, TestStarted, TestFinished and late task/callback paths update only the matching physical owner; RunStarted with unknown total still enters Running and duplicate or stale identities are ignored.",
+        "writes": ["TestJob.Phase", "TestJob.TotalTests", "TestJob.CompletedTests", "TestJob.CurrentTestFullName", "TestJob.FailuresSoFar"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.LateCallbacks_MutateOnlyMatchingPhysicalOwnerAndFinalizeExactlyOnce",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs",
+        "exclusivity_note": "This RED uniquely covers callback identity and stale/duplicate callback rejection; terminal persistence failure has a separate entry and RED."
+      },
+      {
+        "id": "WE-TEST-TERMINAL-DURABLE",
+        "invariant_refs": ["BI-TEST-SINGLE-PHYSICAL-OWNER", "BI-TEST-JOB-LOCK", "BI-TEST-TERMINAL-DURABILITY"],
+        "source_path": "MCPForUnity/Editor/Services/TestJobManager.cs",
+        "entry": "FinalizePhysicalOwner constructs and force-persists the matching terminal snapshot before committing in-memory terminal status, clearing owner/callback state, releasing the attached lock or dispatching a queued successor; persist failure preserves every fence.",
+        "writes": ["TestJob.Phase", "TestJob.Status", "PersistedState.physical_owner", "TestRunStatus.IsRunning", "SharedEditorOperationLock.current"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.RunFinished_WhenCriticalPersistFails_PreservesOwnerStatusAndLockAndDoesNotDispatchNext",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs",
+        "exclusivity_note": "This fault-injection RED uniquely covers the dangerous terminal-persist failure direction; normal finalization tests cannot substitute for it."
+      },
+      {
+        "id": "WE-TEST-TIMEOUT-CLEAR",
+        "invariant_refs": ["BI-TEST-INIT-CLOCK", "BI-TEST-SAFE-RECOVERY", "BI-TEST-JOB-LOCK"],
+        "source_path": "MCPForUnity/Editor/Services/TestJobManager.cs",
+        "entry": "GetJob initialization timeout and ClearStuckJob may mark logical failure, but preserve nonterminal physical owner, TestRunStatus and attached lock until matching completion; an ownerless Queued job can terminate and release safely.",
+        "writes": ["TestJob.Status", "TestJob.Error", "TestJob.Phase", "PersistedState.physical_owner"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.TimeoutAndClear_PreservePhysicalOwnerLockUntilMatchingRunFinished",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs"
+      },
+      {
+        "id": "WE-TEST-EAGER-RESTORE",
+        "invariant_refs": ["BI-TEST-SINGLE-PHYSICAL-OWNER", "BI-TEST-JOB-LOCK", "BI-TEST-RELOAD-BOOTSTRAP"],
+        "source_path": "MCPForUnity/Editor/Services/TestJobManager.cs",
+        "entry": "The existing TestJobManager class is an InitializeOnLoad bootstrap and exposes idempotent EnsureInitialized; the first readiness, PlayModeOptionsGuard or dispatcher consumer invokes it before observing state, restoring V2 owner, callback service, TestRunStatus and attached lock in that order.",
+        "writes": ["Jobs", "PersistedState.physical_owner", "TestRunnerService.callback_owner", "TestRunStatus.IsRunning", "SharedEditorOperationLock.current"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.FirstReadinessConsumerAfterReload_RehydratesOwnerLockStatusAndCallbacksBeforeObservation",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs",
+        "exclusivity_note": "The test seeds persisted state and begins at a readiness consumer without first touching TestJobManager, so direct-manager restore tests cannot satisfy it."
+      },
+      {
+        "id": "WE-TEST-V1-MIGRATION",
+        "invariant_refs": ["BI-TEST-SINGLE-PHYSICAL-OWNER", "BI-TEST-INIT-CLOCK", "BI-TEST-RELOAD-BOOTSTRAP"],
+        "source_path": "MCPForUnity/Editor/Services/TestJobManager.cs",
+        "entry": "Legacy V1 current+running state migrates once to a conservative physical owner with a new generation, Running phase, null AwaitingRunStarted anchor and no queued Execute replay.",
+        "writes": ["PersistedState.schema_version", "TestJob.Generation", "TestJob.Phase", "TestJob.AwaitingRunStartedSinceUnixMs", "PersistedState.physical_owner"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.LegacyV1CurrentRunning_RestoresOwnerWithoutAnchorOrExecuteReplay",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs"
+      },
+      {
+        "id": "WE-TEST-LOCK-ATTACHMENT",
+        "invariant_refs": ["BI-TEST-JOB-LOCK"],
+        "source_path": "MCPForUnity/Editor/Services/SharedEditorOperationLock.cs",
+        "entry": "AttachToJob atomically changes ownership without replacing the token; dispatcher/batch cleanup skips attached state, and a matching durably persisted terminal releases auto ownership or detaches explicit ownership according to its unexpired caller lease.",
+        "writes": ["SharedEditorOperationLock.current", "SharedEditorOperationLock.job_owner_id"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.SharedEditorOperationLockTests.AttachedAutoAndExplicitLocks_ReleaseOnlyAtMatchingJobTerminal",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/SharedEditorOperationLockTests.cs"
+      },
+      {
+        "id": "WE-TEST-LOCK-ATTACHED-REENTRY",
+        "invariant_refs": ["BI-TEST-JOB-LOCK"],
+        "source_path": "MCPForUnity/Editor/Services/SharedEditorOperationLock.cs",
+        "entry": "Reenter and Release reject an explicit token while it is attached to a physical job when invoked by an ordinary command; only identity-matching lifecycle recovery/finalization APIs can inspect or detach it.",
+        "writes": ["SharedEditorOperationLock.current", "SharedEditorOperationLock.job_owner_id"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.SharedEditorOperationLockTests.AttachedExplicitToken_CannotReenterAnotherCommandUntilPhysicalTerminal",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/SharedEditorOperationLockTests.cs"
+      },
+      {
+        "id": "WE-TEST-LOCK-EXPLICIT-RESTORE",
+        "invariant_refs": ["BI-TEST-JOB-LOCK", "BI-TEST-RELOAD-BOOTSTRAP"],
+        "source_path": "MCPForUnity/Editor/Services/SharedEditorOperationLock.cs",
+        "entry": "Acquire/Extend/Release persist only an unexpired explicit command lease; reload restores an attached physical-owner lock first, otherwise restores that explicit lease, and never restores an unattached auto lock. The restored explicit token can pass dirty preflight refresh and then attach to its job.",
+        "writes": ["SharedEditorOperationLock.current", "SharedEditorOperationLock.kind", "SharedEditorOperationLock.expires_at", "SharedEditorOperationLock.job_owner_id"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.SharedEditorOperationLockTests.ExplicitLock_SurvivesPreflightDomainReload_AndAttachesToJob",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/SharedEditorOperationLockTests.cs"
+      },
+      {
+        "id": "WE-TEST-DIRECT-DISPATCHER",
+        "invariant_refs": ["BI-TEST-JOB-LOCK", "BI-TEST-SAFE-RECOVERY", "BI-TEST-API-VISIBILITY"],
+        "source_path": "MCPForUnity/Editor/Services/Transport/TransportCommandDispatcher.cs",
+        "entry": "The direct dispatcher classifies clear_stuck separately, forwards the effective token to run_tests, rejects ordinary use of an attached token, skips cleanup only after a verified attachment and releases a still-command-owned auto lock when registry invocation throws.",
+        "writes": ["run_tests.internal_effective_lock_token", "SharedEditorOperationLock.current"],
+        "red_test_method": "MCPForUnityTests.Editor.Services.TransportCommandDispatcherTests.DirectRunTests_TransfersEffectiveLockAndRegistryExceptionDoesNotLeak",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TransportCommandDispatcherTests.cs"
+      },
+      {
+        "id": "WE-TEST-BATCH-BOUNDARY",
+        "invariant_refs": ["BI-TEST-JOB-LOCK", "BI-TEST-BATCH-BOUNDARY", "BI-TEST-SAFE-RECOVERY"],
+        "source_path": "MCPForUnity/Editor/Tools/BatchExecute.cs",
+        "entry": "Batch preflight treats a normal run_tests request as a start and requires it to be the final executable item; after that item returns a job and attaches the outer token the batch terminates, while clear_stuck remains a recovery action that does not transfer the batch lock.",
+        "writes": ["BatchExecute.command_index", "run_tests.internal_effective_lock_token", "SharedEditorOperationLock.job_owner_id"],
+        "red_test_method": "MCPForUnityTests.Editor.Tools.BatchExecuteTests.RunTestsStart_MustBeLastAndTransfersOuterLockWithoutExecutingLaterCommands",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Tools/BatchExecuteTests.cs"
+      },
+      {
+        "id": "WE-TEST-FORCE-RELEASE",
+        "invariant_refs": ["BI-TEST-JOB-LOCK", "BI-TEST-SAFE-RECOVERY"],
+        "source_path": "MCPForUnity/Editor/Tools/ManageEditorLock.cs",
+        "entry": "force_release refuses while SharedEditorOperationLock is attached to a persisted physical test owner and returns an explicit fence-active consequence; it cannot impersonate physical cancellation.",
+        "writes": ["SharedEditorOperationLock.current", "SharedEditorOperationLock.job_owner_id"],
+        "red_test_method": "MCPForUnityTests.Editor.Tools.ManageEditorLockTests.ForceRelease_WithAttachedPhysicalOwner_IsRejectedAndReportsFence",
+        "red_test_runtime": "csharp",
+        "red_test_file": "TestProjects/UnityMCPTests/Assets/Tests/EditMode/Tools/ManageEditorLockTests.cs"
+      }
+    ],
+    "phase_table": [
+      { "id": "PH-TEST-QUEUED", "phase": "Queued", "meaning": "Job and effective lock attachment are persisted and job_id may be returned; no physical owner exists, the run_tests batch item is terminal for its batch, and a reload may reschedule once.", "exits": "Critical owner claim persists successfully and enters Dispatching, or ownerless clear/cancel durably enters Terminal." },
+      { "id": "PH-TEST-DISPATCHING", "phase": "Dispatching", "meaning": "Physical owner is force-persisted and may be waiting for the service semaphore or inside synchronous Execute; init anchor is null and reload must not replay Execute.", "exits": "Matching RunStarted enters Running, Execute return enters AwaitingRunStarted, or dispatch fault enters Terminal." },
+      { "id": "PH-TEST-AWAITING", "phase": "AwaitingRunStarted", "meaning": "Execute returned for the matching owner and the independent initialization anchor is set.", "exits": "Matching RunStarted enters Running; timeout may mark logical failure but retains this physical fence; matching physical terminal enters Terminal." },
+      { "id": "PH-TEST-RUNNING", "phase": "Running", "meaning": "Matching RunStarted arrived, including a null test tree/unknown total; callbacks update only this owner.", "exits": "Matching physical completion persists Terminal; logical clear may mark failed but cannot release the fence." },
+      { "id": "PH-TEST-TERMINAL", "phase": "Terminal", "meaning": "Physical completion or an ownerless pre-dispatch cancellation is durably recorded before any in-memory owner/status mutation; only after that barrier may the matching job lock release/detach, TestRunStatus clear and a successor dispatch.", "exits": "Terminal and idempotent; later callbacks or task continuations are ignored by identity/CAS. Persist failure leaves the prior nonterminal phase fully fenced." }
+    ],
+    "ui_owners": [],
+    "deferred_findings": [
+      {
+        "id": "DEFER-EXECUTE-CODE-HIGH-RISK-POLICY",
+        "severity": "P2",
+        "disposition": "defer",
+        "statement": "execute_code execute/replay can mutate arbitrary Editor state but is not currently in the private command auto-lock classifier.",
+        "why_deferred": "The 62-commit upstream range changed CodeDom internals but added no execute_code tool or public parameter. Reclassifying this existing tool requires its own policy decision and explicit-token API work; it is not necessary to repair the reproduced TestRunner lifecycle or adapt a newly added API.",
+        "not_in_scope_of": "revision 5",
+        "reopen_condition": "Open a separate lock-policy task if the user wants every arbitrary-code execution serialized rather than only the current high-risk command set."
+      }
+    ]
+  },
+  "case_lookup": {
+    "scope_revision": 5,
+    "explicit_user_terms": ["超时", "自动加锁", "读写分离", "白名单", "clear_stuck"],
+    "context_hash": "c52cb3d1865d320deae1d593936f3e058d116aa4261e01f4f50ba4b2f11623fb",
+    "catalog_hash": "f4b39d9659b8796523f8250cb1beba9bc30509aaa20f0d0dc80c3e46c65649e8",
+    "candidates": [
+      {
+        "slug": "plan-review-confirmation-gate-missing",
+        "disposition": "reject",
+        "reason": "Only the generic RED workflow tag matches. This case concerns a missing authorization gate, not Unity TestRunner ownership, lock transfer, timeout anchors or tool visibility.",
+        "signals": [
+          { "kind": "abstract_tag", "value": "RED", "source": "agent_analysis", "strength": "weak" }
+        ]
+      },
+      {
+        "slug": "unmeasured-frozen-as-unmeasurable",
+        "disposition": "reject",
+        "reason": "Only the generic unknown-state tag matches. The present task has direct Editor log timing and source-path evidence and does not freeze an unmeasured runtime condition as permanently unmeasurable.",
+        "signals": [
+          { "kind": "abstract_tag", "value": "unknown", "source": "agent_analysis", "strength": "weak" }
+        ]
+      }
+    ]
+  }
+}

@@ -3,6 +3,8 @@ using System.Reflection;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using MCPForUnity.Editor.Helpers;
+using MCPForUnity.Editor.Services;
+using MCPForUnityTests.Editor.Services;
 
 namespace MCPForUnityTests.Editor.Tools
 {
@@ -60,6 +62,58 @@ namespace MCPForUnityTests.Editor.Tools
             var err = (ErrorResponse)resultObj;
             Assert.AreEqual(false, err.Success);
             Assert.IsTrue(err.Error.Contains("Unknown test mode", StringComparison.OrdinalIgnoreCase));
+        }
+
+        [Test]
+        public void HandleCommand_ReturnsQueuedJobBeforeRunnerInvocationAndAttachesAutoLock()
+        {
+            var scheduled = new System.Collections.Generic.List<Action>();
+            var runner = new ControlledJobBoundTestRunner();
+            string oldLockMode = Environment.GetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK");
+            Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", "on");
+            MCPServiceLocator.Reset();
+            TestJobManager.ResetForTests(clearSessionState: true);
+            SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+            TestRunStatus.ResetForTests();
+            MCPServiceLocator.Register<ITestRunnerService>(runner);
+            TestJobManager.DelayCallSchedulerForTests = action => scheduled.Add(action);
+
+            var acquired = SharedEditorOperationLock.TryAcquire("auto", "run_tests", isExplicit: false);
+            Assert.IsTrue(acquired.Acquired);
+
+            try
+            {
+                object response = MCPForUnity.Editor.Tools.RunTests.HandleCommand(new JObject
+                {
+                    ["mode"] = "EditMode",
+                    ["testNames"] = new JArray("Queued.Red"),
+                    [MCPForUnity.Editor.Tools.RunTests.InternalEditorLockTokenParameter] = acquired.Token
+                }).GetAwaiter().GetResult();
+
+                var json = JObject.FromObject(response);
+                Assert.IsTrue(json.Value<bool>("success"), json.ToString());
+                Assert.AreEqual("queued", json["data"]?.Value<string>("status"));
+                Assert.IsNotEmpty(json["data"]?.Value<string>("job_id"));
+                Assert.AreEqual(0, runner.InvocationCount,
+                    "The tool response must be constructed before Unity TestRunner is invoked.");
+                Assert.AreEqual(1, scheduled.Count);
+
+                var lockState = SharedEditorOperationLock.GetState();
+                Assert.IsTrue(lockState.IsAttachedToJob);
+                Assert.AreEqual(json["data"]?.Value<string>("job_id"), lockState.AttachedJobId);
+
+                scheduled[0]();
+                Assert.AreEqual(1, runner.InvocationCount);
+            }
+            finally
+            {
+                TestJobManager.DelayCallSchedulerForTests = null;
+                TestJobManager.ResetForTests(clearSessionState: true);
+                SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+                TestRunStatus.ResetForTests();
+                MCPServiceLocator.Reset();
+                Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", oldLockMode);
+            }
         }
     }
 }

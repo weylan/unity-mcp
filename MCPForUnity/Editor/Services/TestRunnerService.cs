@@ -37,6 +37,7 @@ namespace MCPForUnity.Editor.Services
         {
             // After domain reload or editor restart: if a restore is pending and no test run
             // is active, restore now. TryLoad checks SessionState first, then the marker file.
+            TestJobManager.EnsureInitialized();
             if (TryLoad(out _, out _) && !TestRunStatus.IsRunning)
             {
                 Restore();
@@ -143,19 +144,24 @@ namespace MCPForUnity.Editor.Services
     /// Concrete implementation of <see cref="ITestRunnerService"/>.
     /// Coordinates Unity Test Runner operations and produces structured results.
     /// </summary>
-    internal sealed class TestRunnerService : ITestRunnerService, ICallbacks, IDisposable
+    internal sealed class TestRunnerService : ITestRunnerService, IJobBoundTestRunnerService, ICallbacks, IDisposable
     {
         private static readonly TestMode[] AllModes = { TestMode.EditMode, TestMode.PlayMode };
 
         private readonly TestRunnerApi _testRunnerApi;
         private readonly SemaphoreSlim _operationLock = new SemaphoreSlim(1, 1);
         private readonly List<ITestResultAdaptor> _leafResults = new List<ITestResultAdaptor>();
+        private readonly object _callbackLock = new object();
         private TaskCompletionSource<TestRunResult> _runCompletionSource;
+        private BoundCallbacks _registeredCallbacks;
+        private TestJobIdentity? _callbackOwner;
+
+        internal static Func<Task> BeforeExecuteForTests { get; set; }
+        internal static Action<ExecutionSettings> ExecuteOverrideForTests { get; set; }
 
         public TestRunnerService()
         {
             _testRunnerApi = ScriptableObject.CreateInstance<TestRunnerApi>();
-            _testRunnerApi.RegisterCallbacks(this);
         }
 
         public async Task<IReadOnlyList<Dictionary<string, string>>> GetTestsAsync(TestMode? mode)
@@ -187,8 +193,25 @@ namespace MCPForUnity.Editor.Services
 
         public async Task<TestRunResult> RunTestsAsync(TestMode mode, TestFilterOptions filterOptions = null)
         {
+            return await RunTestsCoreAsync(null, mode, filterOptions).ConfigureAwait(true);
+        }
+
+        public async Task<TestRunResult> RunTestsForJobAsync(
+            TestJobIdentity owner,
+            TestMode mode,
+            TestFilterOptions filterOptions = null)
+        {
+            return await RunTestsCoreAsync(owner, mode, filterOptions).ConfigureAwait(true);
+        }
+
+        private async Task<TestRunResult> RunTestsCoreAsync(
+            TestJobIdentity? owner,
+            TestMode mode,
+            TestFilterOptions filterOptions)
+        {
             await _operationLock.WaitAsync().ConfigureAwait(true);
             Task<TestRunResult> runTask;
+            TaskCompletionSource<TestRunResult> ownedCompletionSource = null;
             bool adjustedPlayModeOptions = false;
             bool originalEnterPlayModeOptionsEnabled = false;
             EnterPlayModeOptions originalEnterPlayModeOptions = EnterPlayModeOptions.None;
@@ -218,10 +241,16 @@ namespace MCPForUnity.Editor.Services
                         out originalEnterPlayModeOptions);
                 }
 
+                RegisterBoundCallbacks(owner);
                 _leafResults.Clear();
-                _runCompletionSource = new TaskCompletionSource<TestRunResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-                // Mark running immediately so readiness snapshots reflect the busy state even before callbacks fire.
-                TestRunStatus.MarkStarted(mode);
+                ownedCompletionSource = new TaskCompletionSource<TestRunResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _runCompletionSource = ownedCompletionSource;
+                // MCP jobs are marked busy by TestJobManager only after the physical owner has
+                // been durably persisted. Public/non-job callers retain the legacy status path.
+                if (!owner.HasValue)
+                {
+                    TestRunStatus.MarkStarted(mode);
+                }
 
                 var filter = new Filter
                 {
@@ -246,14 +275,48 @@ namespace MCPForUnity.Editor.Services
                     TestRunnerNoThrottle.ApplyNoThrottlingPreemptive();
                 }
 
-                _testRunnerApi.Execute(settings);
+                if (BeforeExecuteForTests != null)
+                {
+                    await BeforeExecuteForTests().ConfigureAwait(true);
+                }
 
-                runTask = _runCompletionSource.Task;
+                if (ExecuteOverrideForTests != null)
+                {
+                    ExecuteOverrideForTests(settings);
+                }
+                else
+                {
+                    _testRunnerApi.Execute(settings);
+                }
+
+                // Synchronous Execute duration and semaphore/preflight delay are deliberately
+                // outside init_timeout. A synchronous RunStarted callback may already have moved
+                // the owner to Running; TestJobManager treats this notification as a CAS.
+                if (owner.HasValue)
+                {
+                    TestJobManager.OnExecuteReturned(owner.Value);
+                }
+
+                runTask = ownedCompletionSource.Task;
             }
             catch
             {
-                // Ensure the status is cleared if we failed to start the run.
-                TestRunStatus.MarkFinished();
+                if (ReferenceEquals(_runCompletionSource, ownedCompletionSource))
+                {
+                    _runCompletionSource = null;
+                }
+                if (owner.HasValue)
+                {
+                    ClearPhysicalOwner(owner.Value);
+                }
+                else
+                {
+                    UnregisterBoundCallbacks();
+                }
+                if (!owner.HasValue)
+                {
+                    TestRunStatus.MarkFinished();
+                }
                 if (adjustedPlayModeOptions)
                 {
                     RestoreEnterPlayModeOptions(originalEnterPlayModeOptionsEnabled, originalEnterPlayModeOptions);
@@ -274,20 +337,32 @@ namespace MCPForUnity.Editor.Services
                     RestoreEnterPlayModeOptions(originalEnterPlayModeOptionsEnabled, originalEnterPlayModeOptions);
                 }
 
+                if (!owner.HasValue)
+                {
+                    UnregisterBoundCallbacks();
+                }
+
                 _operationLock.Release();
+            }
+        }
+
+        public void BindPhysicalOwner(TestJobIdentity owner)
+        {
+            RegisterBoundCallbacks(owner);
+        }
+
+        public void ClearPhysicalOwner(TestJobIdentity owner)
+        {
+            lock (_callbackLock)
+            {
+                if (!_callbackOwner.HasValue || _callbackOwner.Value != owner) return;
+                UnregisterBoundCallbacksLocked();
             }
         }
 
         public void Dispose()
         {
-            try
-            {
-                _testRunnerApi?.UnregisterCallbacks(this);
-            }
-            catch
-            {
-                // Ignore cleanup errors
-            }
+            UnregisterBoundCallbacks();
 
             if (_testRunnerApi != null)
             {
@@ -297,40 +372,114 @@ namespace MCPForUnity.Editor.Services
             _operationLock.Dispose();
         }
 
+        private sealed class BoundCallbacks : ICallbacks
+        {
+            private readonly TestRunnerService _ownerService;
+            private readonly TestJobIdentity? _owner;
+
+            public BoundCallbacks(TestRunnerService ownerService, TestJobIdentity? owner)
+            {
+                _ownerService = ownerService;
+                _owner = owner;
+            }
+
+            public void RunStarted(ITestAdaptor testsToRun) => _ownerService.HandleRunStarted(_owner, testsToRun);
+            public void RunFinished(ITestResultAdaptor result) => _ownerService.HandleRunFinished(_owner, result);
+            public void TestStarted(ITestAdaptor test) => _ownerService.HandleTestStarted(_owner, test);
+            public void TestFinished(ITestResultAdaptor result) => _ownerService.HandleTestFinished(_owner, result);
+        }
+
+        private void RegisterBoundCallbacks(TestJobIdentity? owner)
+        {
+            lock (_callbackLock)
+            {
+                if (_registeredCallbacks != null && _callbackOwner == owner) return;
+                UnregisterBoundCallbacksLocked();
+                _callbackOwner = owner;
+                _registeredCallbacks = new BoundCallbacks(this, owner);
+                _testRunnerApi.RegisterCallbacks(_registeredCallbacks);
+            }
+        }
+
+        private void UnregisterBoundCallbacks()
+        {
+            lock (_callbackLock)
+            {
+                UnregisterBoundCallbacksLocked();
+            }
+        }
+
+        private void UnregisterBoundCallbacksLocked()
+        {
+            if (_registeredCallbacks != null)
+            {
+                try { _testRunnerApi?.UnregisterCallbacks(_registeredCallbacks); }
+                catch { /* best effort during reload/shutdown */ }
+            }
+            _registeredCallbacks = null;
+            _callbackOwner = null;
+        }
+
         #region TestRunnerApi callbacks
 
         public void RunStarted(ITestAdaptor testsToRun)
         {
-            _leafResults.Clear();
+            HandleRunStarted(CurrentCallbackOwner(), testsToRun);
+        }
+
+        private void HandleRunStarted(TestJobIdentity? owner, ITestAdaptor testsToRun)
+        {
+            if (!owner.HasValue)
+            {
+                _leafResults.Clear();
+                return;
+            }
+
+            // Best-effort progress info for async polling (avoid heavy payloads).
+            int? total = null;
             try
             {
-                // Best-effort progress info for async polling (avoid heavy payloads).
-                int? total = null;
                 if (testsToRun != null)
                 {
                     total = CountLeafTests(testsToRun);
                 }
-                TestJobManager.OnRunStarted(total);
             }
-            catch
+            catch { }
+
+            if (TestJobManager.OnRunStarted(owner.Value, total))
             {
-                TestJobManager.OnRunStarted(null);
+                _leafResults.Clear();
             }
         }
 
         public void RunFinished(ITestResultAdaptor result)
         {
+            HandleRunFinished(CurrentCallbackOwner(), result);
+        }
+
+        private void HandleRunFinished(TestJobIdentity? owner, ITestResultAdaptor result)
+        {
+            // Bound callback objects carry immutable owner identity. A callback already queued by
+            // Unity before unregister must not complete or contaminate a newer run.
+            if (owner.HasValue && !TestJobManager.IsPhysicalOwner(owner.Value))
+            {
+                return;
+            }
+
             // Always create payload and clean up job state, even if _runCompletionSource is null.
             // This handles domain reload scenarios (e.g., PlayMode tests) where the TestRunnerService
             // is recreated and _runCompletionSource is lost, but TestJobManager state persists via
             // SessionState and the Test Runner still delivers the RunFinished callback.
             var payload = TestRunResult.Create(result, _leafResults);
 
-            // Clean up state regardless of _runCompletionSource - these methods safely handle
-            // the case where no MCP job exists (e.g., manual test runs via Unity UI).
-            TestRunStatus.MarkFinished();
-            TestJobManager.OnRunFinished();
-            TestJobManager.FinalizeCurrentJobFromRunFinished(payload);
+            if (owner.HasValue)
+            {
+                TestJobManager.FinalizePhysicalOwnerFromRunFinished(owner.Value, payload);
+            }
+            else
+            {
+                TestRunStatus.MarkFinished();
+            }
 
             // If a domain reload destroyed the original RunTestsAsync caller, the finally block
             // that would normally restore EditorSettings never ran. Restore from SessionState.
@@ -350,6 +499,12 @@ namespace MCPForUnity.Editor.Services
 
         public void TestStarted(ITestAdaptor test)
         {
+            HandleTestStarted(CurrentCallbackOwner(), test);
+        }
+
+        private void HandleTestStarted(TestJobIdentity? owner, ITestAdaptor test)
+        {
+            if (!owner.HasValue) return;
             try
             {
                 // Prefer FullName for uniqueness; fall back to Name.
@@ -358,7 +513,7 @@ namespace MCPForUnity.Editor.Services
                 {
                     fullName = test?.Name;
                 }
-                TestJobManager.OnTestStarted(fullName);
+                TestJobManager.OnTestStarted(owner.Value, fullName);
             }
             catch
             {
@@ -368,6 +523,11 @@ namespace MCPForUnity.Editor.Services
 
         public void TestFinished(ITestResultAdaptor result)
         {
+            HandleTestFinished(CurrentCallbackOwner(), result);
+        }
+
+        private void HandleTestFinished(TestJobIdentity? owner, ITestResultAdaptor result)
+        {
             if (result == null)
             {
                 return;
@@ -375,7 +535,11 @@ namespace MCPForUnity.Editor.Services
 
             if (!result.HasChildren)
             {
-                _leafResults.Add(result);
+                if (!owner.HasValue)
+                {
+                    _leafResults.Add(result);
+                    return;
+                }
                 try
                 {
                     string fullName = result.Test?.FullName;
@@ -402,13 +566,21 @@ namespace MCPForUnity.Editor.Services
                         // ignore adaptor quirks
                     }
 
-                    TestJobManager.OnLeafTestFinished(fullName, isFailure, message);
+                    if (TestJobManager.OnLeafTestFinished(owner.Value, fullName, isFailure, message))
+                    {
+                        _leafResults.Add(result);
+                    }
                 }
                 catch
                 {
                     // ignore
                 }
             }
+        }
+
+        private TestJobIdentity? CurrentCallbackOwner()
+        {
+            lock (_callbackLock) return _callbackOwner;
         }
 
         #endregion

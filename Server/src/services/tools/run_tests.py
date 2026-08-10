@@ -129,11 +129,18 @@ class TestJobProgress(BaseModel):
 
 class GetTestJobData(BaseModel):
     job_id: str
+    generation: int | None = None
     status: str
+    phase: str | None = None
     mode: str | None = None
     started_unix_ms: int | None = None
+    awaiting_run_started_since_unix_ms: int | None = None
     finished_unix_ms: int | None = None
+    physical_finished_unix_ms: int | None = None
     last_update_unix_ms: int | None = None
+    safe_to_start_new_run: bool | None = None
+    physical_owner_retained: bool | None = None
+    restart_required_if_orphaned: bool | None = None
     progress: TestJobProgress | None = None
     error: str | None = None
     result: RunTestsResult | None = None
@@ -141,6 +148,21 @@ class GetTestJobData(BaseModel):
 
 class GetTestJobResponse(MCPResponse):
     data: GetTestJobData | None = None
+
+
+def _is_physical_terminal(data: dict[str, Any]) -> bool:
+    """Keep polling a logically failed job while Unity still owns the physical run."""
+    if data.get("phase") == "terminal":
+        return True
+    if data.get("physical_owner_retained") is True:
+        return False
+    return data.get("status") in ("succeeded", "failed", "cancelled")
+
+
+def _physical_nudge_status(data: dict[str, Any]) -> str:
+    if data.get("physical_owner_retained") is True and data.get("phase") != "terminal":
+        return "running"
+    return str(data.get("status", ""))
 
 
 @mcp_for_unity_tool(
@@ -170,11 +192,13 @@ async def run_tests(
     editor_lock_token: Annotated[str | None,
                                  "Token returned by manage_editor_lock acquire for multi-operation editor locks"] = None,
     init_timeout: Annotated[int | None,
-                            "Initialization timeout in milliseconds. PlayMode tests may need longer "
-                            "due to domain reload (default: 15000). Recommended: 120000 for PlayMode."] = None,
+                            "Initialization timeout in milliseconds, measured only after Unity's "
+                            "TestRunner Execute call returns while RunStarted is still pending "
+                            "(default: 15000). Recommended: 120000 for PlayMode."] = None,
     clear_stuck: Annotated[bool,
-                           "Clear an orphaned running job instead of starting a run. Use when a job "
-                           "was lost to a domain reload and is blocking every subsequent run."] = False,
+                           "Logically fail/clear a stuck job instead of starting a run. This does not "
+                           "cancel Unity's physical TestRunner owner. If safe_to_start_new_run is false, "
+                           "wait for its terminal callback or restart Unity."] = False,
 ) -> RunTestsStartResponse | MCPResponse:
     unity_instance = await get_unity_instance_from_context(ctx)
 
@@ -182,11 +206,14 @@ async def run_tests(
     # clearing, and requires_no_tests would reject the very call that exists to clear the
     # orphaned job blocking it.
     if clear_stuck:
+        clear_params: dict[str, Any] = {"clear_stuck": True}
+        if editor_lock_token is not None:
+            clear_params["editor_lock_token"] = editor_lock_token
         response = await unity_transport.send_with_unity_instance(
             async_send_command_with_retry,
             unity_instance,
             "run_tests",
-            {"clear_stuck": True},
+            clear_params,
         )
         if isinstance(response, dict):
             return MCPResponse(**response)
@@ -195,7 +222,13 @@ async def run_tests(
     if init_timeout is not None and init_timeout <= 0:
         return MCPResponse(success=False, error="init_timeout must be a positive integer (milliseconds) or None")
 
-    gate = await preflight(ctx, requires_no_tests=True, wait_for_no_compile=True, refresh_if_dirty=True)
+    gate = await preflight(
+        ctx,
+        requires_no_tests=True,
+        wait_for_no_compile=True,
+        refresh_if_dirty=True,
+        editor_lock_token=editor_lock_token,
+    )
     if isinstance(gate, MCPResponse):
         return gate
 
@@ -301,7 +334,7 @@ async def get_test_job(
             # Check if tests are done
             data = response.get("data", {})
             status = data.get("status", "")
-            if status in ("succeeded", "failed", "cancelled"):
+            if _is_physical_terminal(data):
                 return GetTestJobResponse(**response)
 
             # Detect progress and reset exponential backoff
@@ -321,7 +354,7 @@ async def get_test_job(
             current_time_ms = int(time.time() * 1000)
 
             if should_nudge(
-                status=status,
+                status=_physical_nudge_status(data),
                 editor_is_focused=editor_is_focused,
                 last_update_unix_ms=last_update_unix_ms,
                 current_time_ms=current_time_ms,
@@ -356,7 +389,7 @@ async def get_test_job(
     # externally. Check if Unity needs a nudge on every call so stalls get
     # detected regardless of polling style.
     data = response.get("data", {})
-    status = data.get("status", "")
+    status = _physical_nudge_status(data)
     if status == "running":
         progress = data.get("progress") or {}
         editor_is_focused = progress.get("editor_is_focused", True)

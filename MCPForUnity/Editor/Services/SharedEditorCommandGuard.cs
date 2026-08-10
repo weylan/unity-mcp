@@ -1,5 +1,6 @@
 using System;
 using MCPForUnity.Editor.Helpers;
+using MCPForUnity.Editor.Tools;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 
@@ -59,6 +60,7 @@ namespace MCPForUnity.Editor.Services
 
         public static Decision Evaluate(string toolName, JObject parameters, bool hasValidEditorLockToken = false)
         {
+            TestJobManager.EnsureInitialized();
             string normalizedTool = (toolName ?? string.Empty).Trim();
             if (string.IsNullOrEmpty(normalizedTool))
             {
@@ -148,6 +150,10 @@ namespace MCPForUnity.Editor.Services
             switch (toolName)
             {
                 case "run_tests":
+                    if (RunTests.IsClearStuckRequest(p))
+                    {
+                        return null;
+                    }
                     return HasTestFilter(p) ? null : "run_tests requires at least one explicit test filter on shared editors";
                 case "refresh_unity":
                     return GetRefreshUnityRisk(p);

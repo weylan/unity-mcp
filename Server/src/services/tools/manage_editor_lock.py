@@ -1,4 +1,9 @@
-"""Explicit shared editor operation lock management."""
+"""Explicit shared editor operation lock management.
+
+An attached TestRunner lock is a physical-owner fence, not a normal TTL lease.
+Release, extend, token reuse, and force_release must all fail until the matching
+test run reaches its durable terminal state; force_release is not cancellation.
+"""
 
 from typing import Annotated, Any, Literal
 

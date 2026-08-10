@@ -39,6 +39,7 @@ namespace MCPForUnity.Editor.Services.Transport
             Math.Max(1, EditorPrefs.GetInt("MCPForUnity.PlayModePumpBudgetMs", DefaultPlayModePumpBudgetMs));
         internal static Func<bool> SlicingActiveOverrideForTests;
         internal static Action<Action> DelayCallRegistrarForTests;
+        internal static Func<string, JObject, TaskCompletionSource<string>, object> CommandExecutorOverrideForTests;
 
         private sealed class PendingCommand
         {
@@ -225,6 +226,7 @@ namespace MCPForUnity.Editor.Services.Transport
                 return;
             }
 
+            TestJobManager.EnsureInitialized();
             CommandRegistry.Initialize();
             initialised = true;
         }
@@ -357,6 +359,7 @@ namespace MCPForUnity.Editor.Services.Transport
             }
 
             Interlocked.Exchange(ref _processingFlag, 0);
+            CommandExecutorOverrideForTests = null;
         }
 
         private static void PrunePendingOrderLocked()
@@ -476,6 +479,7 @@ namespace MCPForUnity.Editor.Services.Transport
                 return;
             }
 
+            string autoLockTokenForCleanup = null;
             try
             {
                 Command command;
@@ -557,9 +561,10 @@ namespace MCPForUnity.Editor.Services.Transport
 
                 string autoLockToken = null;
                 string lockAction = parameters?.Value<string>("action");
-                bool isHighRiskTool = SharedEditorOperationLock.IsHighRiskTool(command.type, lockAction);
-                string clientToken = parameters?.Value<string>("editor_lock_token")
-                                  ?? parameters?.Value<string>("editorLockToken");
+                bool isRunTestsRecovery = IsRunTestsRecovery(command.type, parameters);
+                bool isHighRiskTool = !isRunTestsRecovery
+                                      && SharedEditorOperationLock.IsHighRiskTool(command.type, lockAction);
+                string clientToken = new ToolParams(parameters).Get("editor_lock_token");
                 bool hasValidEditorLockToken = false;
 
                 if (isHighRiskTool && !string.IsNullOrEmpty(clientToken))
@@ -569,7 +574,19 @@ namespace MCPForUnity.Editor.Services.Transport
                         $"{command.type}:{lockAction}");
                     if (!hasValidEditorLockToken)
                     {
-                        var tokenErrResp = SharedEditorOperationLock.BuildTokenInvalidResponse(clientToken, command.type);
+                        ErrorResponse tokenErrResp;
+                        if (SharedEditorOperationLock.TryGetMatchingAttachedToken(clientToken, out var attachedHolder))
+                        {
+                            tokenErrResp = SharedEditorOperationLock.BuildBusyResponse(attachedHolder, command.type);
+                        }
+                        else if (SharedEditorOperationLock.ValidateToken(clientToken))
+                        {
+                            tokenErrResp = SharedEditorOperationLock.BuildPersistenceFailedResponse(command.type);
+                        }
+                        else
+                        {
+                            tokenErrResp = SharedEditorOperationLock.BuildTokenInvalidResponse(clientToken, command.type);
+                        }
                         var tokenErrResponse = new { status = "success", result = tokenErrResp };
                         pending.TrySetResult(JsonConvert.SerializeObject(tokenErrResponse));
                         RemovePending(id, pending);
@@ -601,17 +618,34 @@ namespace MCPForUnity.Editor.Services.Transport
 
                         if (!lockResult.Acquired)
                         {
-                            var busyResp = SharedEditorOperationLock.BuildBusyResponse(lockResult.BusyHolder, command.type);
+                            var busyResp = lockResult.PersistenceFailed
+                                ? SharedEditorOperationLock.BuildPersistenceFailedResponse(command.type)
+                                : SharedEditorOperationLock.BuildBusyResponse(lockResult.BusyHolder, command.type);
                             var busyResponse = new { status = "success", result = busyResp };
                             pending.TrySetResult(JsonConvert.SerializeObject(busyResponse));
                             RemovePending(id, pending);
                             return;
                         }
                         autoLockToken = lockResult.Token;
+                        autoLockTokenForCleanup = autoLockToken;
                     }
                 }
 
-                var result = CommandRegistry.ExecuteCommand(command.type, parameters, pending.CompletionSource);
+                JObject executionParameters = parameters;
+                if (string.Equals(command.type, "run_tests", StringComparison.OrdinalIgnoreCase)
+                    && !isRunTestsRecovery)
+                {
+                    string effectiveLockToken = hasValidEditorLockToken ? clientToken : autoLockToken;
+                    if (!string.IsNullOrEmpty(effectiveLockToken))
+                    {
+                        executionParameters = (JObject)parameters.DeepClone();
+                        executionParameters[RunTests.InternalEditorLockTokenParameter] = effectiveLockToken;
+                    }
+                }
+
+                var result = CommandExecutorOverrideForTests != null
+                    ? CommandExecutorOverrideForTests(command.type, executionParameters, pending.CompletionSource)
+                    : CommandRegistry.ExecuteCommand(command.type, executionParameters, pending.CompletionSource);
 
                 if (result == null)
                 {
@@ -665,6 +699,7 @@ namespace MCPForUnity.Editor.Services.Transport
                 }
 
                 SharedEditorOperationLock.ReleaseIfAutoLock(autoLockToken);
+                autoLockTokenForCleanup = null;
                 sw?.Stop();
 
                 string syncLogStatus = "SUCCESS";
@@ -682,10 +717,21 @@ namespace MCPForUnity.Editor.Services.Transport
             }
             catch (Exception ex)
             {
+                SharedEditorOperationLock.ReleaseIfAutoLock(autoLockTokenForCleanup);
                 McpLog.Error($"Error processing command: {ex.Message}\n{ex.StackTrace}");
                 pending.TrySetResult(SerializeError(ex.Message, "Unknown (error during processing)", ex.StackTrace));
                 RemovePending(id, pending);
             }
+        }
+
+        private static bool IsRunTestsRecovery(string commandType, JObject parameters)
+        {
+            if (!string.Equals(commandType, "run_tests", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return RunTests.IsClearStuckRequest(parameters);
         }
 
         private static void CancelPending(string id, CancellationToken token)

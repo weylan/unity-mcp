@@ -118,6 +118,44 @@ async def test_run_tests_clear_stuck_forwards_only_the_flag(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_tests_clear_stuck_preserves_explicit_lock_token(monkeypatch):
+    from services.tools.run_tests import run_tests
+    import services.tools.run_tests as mod
+
+    captured = {}
+
+    async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
+        captured["command_type"] = command_type
+        captured["params"] = params
+        return {
+            "success": True,
+            "message": "Logical job cleared; physical fence retained.",
+            "data": {
+                "cleared": True,
+                "safe_to_start_new_run": False,
+                "physical_owner_retained": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
+
+    resp = await run_tests(
+        DummyContext(),
+        clear_stuck=True,
+        editor_lock_token="tok-clear",
+    )
+
+    assert captured["command_type"] == "run_tests"
+    assert captured["params"] == {
+        "clear_stuck": True,
+        "editor_lock_token": "tok-clear",
+    }
+    assert resp.success is True
+    assert resp.data["safe_to_start_new_run"] is False
+
+
+@pytest.mark.asyncio
 async def test_run_tests_clear_stuck_bypasses_preflight(monkeypatch):
     """#1272: preflight(requires_no_tests=True) would reject the call that clears the job blocking it."""
     from services.tools.run_tests import run_tests
@@ -171,9 +209,11 @@ async def test_run_tests_without_clear_stuck_still_preflights(monkeypatch):
         mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
     monkeypatch.setattr(mod, "preflight", recording_preflight)
 
-    resp = await run_tests(DummyContext(), mode="EditMode")
+    resp = await run_tests(
+        DummyContext(), mode="EditMode", editor_lock_token="tok-preflight")
     assert len(calls) == 1
     assert calls[0]["requires_no_tests"] is True
+    assert calls[0]["editor_lock_token"] == "tok-preflight"
     assert resp.success is True
 
 
@@ -198,3 +238,62 @@ async def test_get_test_job_forwards_job_id(monkeypatch):
     assert resp.success is True
     assert resp.data is not None
     assert resp.data.job_id == "job-1"
+
+
+@pytest.mark.asyncio
+async def test_get_test_job_waits_for_physical_terminal_after_logical_failure(monkeypatch):
+    from services.tools.run_tests import get_test_job
+    import services.tools.run_tests as mod
+
+    responses = [
+        {
+            "success": True,
+            "data": {
+                "job_id": "job-fenced",
+                "status": "failed",
+                "phase": "awaiting_run_started",
+                "physical_owner_retained": True,
+                "last_update_unix_ms": 100,
+                "progress": {"editor_is_focused": True},
+            },
+        },
+        {
+            "success": True,
+            "data": {
+                "job_id": "job-fenced",
+                "status": "failed",
+                "phase": "terminal",
+                "physical_owner_retained": False,
+                "finished_unix_ms": 100,
+                "physical_finished_unix_ms": 200,
+                "last_update_unix_ms": 200,
+            },
+        },
+    ]
+    calls = 0
+
+    async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
+        nonlocal calls
+        response = responses[min(calls, len(responses) - 1)]
+        calls += 1
+        return response
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(
+        mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
+    monkeypatch.setattr(mod.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(mod, "_get_unity_project_path", lambda _instance: _async_none())
+
+    resp = await get_test_job(DummyContext(), job_id="job-fenced", wait_timeout=1)
+
+    assert calls == 2
+    assert resp.data is not None
+    assert resp.data.phase == "terminal"
+    assert resp.data.finished_unix_ms == 100
+    assert resp.data.physical_finished_unix_ms == 200
+
+
+async def _async_none():
+    return None

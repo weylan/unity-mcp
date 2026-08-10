@@ -15,17 +15,28 @@ namespace MCPForUnity.Editor.Tools
     [McpForUnityTool("run_tests", AutoRegister = false, Group = "testing")]
     public static class RunTests
     {
+        // Transport- and batch-internal capability handoff. It is deliberately not part of the
+        // public MCP schema; the outer executor owns acquisition and the job owns release.
+        internal const string InternalEditorLockTokenParameter = "__editor_lock_token";
+
         public static Task<object> HandleCommand(JObject @params)
         {
             try
             {
                 // Check for clear_stuck action first
-                if (ParamCoercion.CoerceBool(@params?["clear_stuck"], false))
+                if (IsClearStuckRequest(@params))
                 {
-                    bool wasCleared = TestJobManager.ClearStuckJob();
+                    TestJobClearResult clearResult = TestJobManager.ClearStuckJob();
                     return Task.FromResult<object>(new SuccessResponse(
-                        wasCleared ? "Stuck job cleared." : "No running job to clear.",
-                        new { cleared = wasCleared }
+                        clearResult.Cleared ? "Stuck job cleared logically." : "No running job to clear.",
+                        new
+                        {
+                            cleared = clearResult.Cleared,
+                            job_id = clearResult.JobId,
+                            safe_to_start_new_run = clearResult.SafeToStartNewRun,
+                            physical_owner_retained = clearResult.PhysicalOwnerRetained,
+                            restart_required_if_orphaned = clearResult.RestartRequiredIfOrphaned,
+                        }
                     ));
                 }
 
@@ -46,12 +57,17 @@ namespace MCPForUnity.Editor.Tools
 
                 var filterOptions = GetFilterOptions(@params);
                 long initTimeoutMs = p.GetInt("initTimeout") ?? 0;
-                string jobId = TestJobManager.StartJob(parsedMode.Value, filterOptions, initTimeoutMs);
+                string effectiveLockToken = @params?[InternalEditorLockTokenParameter]?.ToString();
+                string jobId = TestJobManager.StartJob(
+                    parsedMode.Value,
+                    filterOptions,
+                    initTimeoutMs,
+                    effectiveLockToken);
 
-                return Task.FromResult<object>(new SuccessResponse("Test job started.", new
+                return Task.FromResult<object>(new SuccessResponse("Test job queued.", new
                 {
                     job_id = jobId,
-                    status = "running",
+                    status = "queued",
                     mode = parsedMode.Value.ToString(),
                     include_details = includeDetails,
                     include_failed_tests = includeFailedTests
@@ -67,6 +83,14 @@ namespace MCPForUnity.Editor.Tools
                 return Task.FromResult<object>(new ErrorResponse($"Failed to start test job: {ex.Message}"));
             }
         }
+
+        internal static bool IsClearStuckRequest(JObject @params)
+        {
+            return IsClearStuckRequest(new ToolParams(@params ?? new JObject()));
+        }
+
+        internal static bool IsClearStuckRequest(ToolParams parameters)
+            => parameters != null && parameters.GetBool("clear_stuck", false);
 
         private static TestFilterOptions GetFilterOptions(JObject @params)
         {

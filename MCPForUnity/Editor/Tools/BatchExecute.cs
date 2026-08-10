@@ -51,6 +51,20 @@ namespace MCPForUnity.Editor.Tools
                     $"A maximum of {maxCommands} commands are allowed per batch (configurable in MCP Tools window, hard max {AbsoluteMaxCommandsPerBatch}).");
             }
 
+            // A normal run_tests call transfers the batch operation lock to a physical owner and
+            // returns before Unity starts executing tests. No later child may run under that fence.
+            for (int i = 0; i < commandsToken.Count; i++)
+            {
+                if (commandsToken[i] is JObject candidate && IsNormalRunTestsStart(candidate))
+                {
+                    if (i != commandsToken.Count - 1)
+                    {
+                        return new ErrorResponse(
+                            "A normal run_tests start must be the last executable command in batch_execute.");
+                    }
+                }
+            }
+
             bool failFast = @params.Value<bool?>("failFast") ?? false;
             bool parallelRequested = @params.Value<bool?>("parallel") ?? false;
             int? maxParallel = @params.Value<int?>("maxParallelism");
@@ -68,6 +82,7 @@ namespace MCPForUnity.Editor.Tools
             string batchAutoToken = null;
             bool batchNeedsLock = false;
             bool hasExplicitLockToken = false;
+            string batchClientToken = new ToolParams(@params).Get("editor_lock_token");
             foreach (var cmdToken in commandsToken)
             {
                 if (cmdToken is JObject cmdObj)
@@ -75,7 +90,8 @@ namespace MCPForUnity.Editor.Tools
                     string tool = cmdObj["tool"]?.ToString();
                     var cmdParams = NormalizeParameterKeys(cmdObj["params"] as JObject ?? new JObject());
                     string act = cmdParams?.Value<string>("action");
-                    if (SharedEditorOperationLock.IsHighRiskTool(tool, act))
+                    if (!IsRunTestsRecovery(tool, cmdParams)
+                        && SharedEditorOperationLock.IsHighRiskTool(tool, act))
                     {
                         batchNeedsLock = true;
                         break;
@@ -86,17 +102,23 @@ namespace MCPForUnity.Editor.Tools
             if (batchNeedsLock)
             {
                 int batchTtl = Math.Min(commandsToken.Count * 15, 300);
-                string clientToken = @params.Value<string>("editor_lock_token")
-                                  ?? @params.Value<string>("editorLockToken");
-                if (!string.IsNullOrEmpty(clientToken))
+                if (!string.IsNullOrEmpty(batchClientToken))
                 {
                     hasExplicitLockToken = SharedEditorOperationLock.Reenter(
-                        clientToken,
+                        batchClientToken,
                         "batch_execute",
                         batchTtl);
                     if (!hasExplicitLockToken)
                     {
-                        return SharedEditorOperationLock.BuildTokenInvalidResponse(clientToken, "batch_execute");
+                        if (SharedEditorOperationLock.TryGetMatchingAttachedToken(batchClientToken, out var attachedHolder))
+                        {
+                            return SharedEditorOperationLock.BuildBusyResponse(attachedHolder, "batch_execute");
+                        }
+                        if (SharedEditorOperationLock.ValidateToken(batchClientToken))
+                        {
+                            return SharedEditorOperationLock.BuildPersistenceFailedResponse("batch_execute");
+                        }
+                        return SharedEditorOperationLock.BuildTokenInvalidResponse(batchClientToken, "batch_execute");
                     }
                 }
                 else
@@ -105,7 +127,9 @@ namespace MCPForUnity.Editor.Tools
                         "auto", "batch_execute", isExplicit: false, ttlSeconds: batchTtl);
                     if (!lockResult.Acquired)
                     {
-                        return SharedEditorOperationLock.BuildBusyResponse(lockResult.BusyHolder, "batch_execute");
+                        return lockResult.PersistenceFailed
+                            ? SharedEditorOperationLock.BuildPersistenceFailedResponse("batch_execute")
+                            : SharedEditorOperationLock.BuildBusyResponse(lockResult.BusyHolder, "batch_execute");
                     }
                     batchAutoToken = lockResult.Token;
                 }
@@ -192,6 +216,16 @@ namespace MCPForUnity.Editor.Tools
 
                 try
                 {
+                    if (string.Equals(toolName, "run_tests", StringComparison.OrdinalIgnoreCase)
+                        && !IsRunTestsRecovery(toolName, commandParams))
+                    {
+                        string effectiveLockToken = hasExplicitLockToken ? batchClientToken : batchAutoToken;
+                        if (!string.IsNullOrEmpty(effectiveLockToken))
+                        {
+                            commandParams[RunTests.InternalEditorLockTokenParameter] = effectiveLockToken;
+                        }
+                    }
+
                     var result = await CommandRegistry.InvokeCommandAsync(toolName, commandParams).ConfigureAwait(true);
                     bool callSucceeded = DetermineCallSucceeded(result);
                     if (callSucceeded)
@@ -286,6 +320,24 @@ namespace MCPForUnity.Editor.Tools
             }
 
             return true;
+        }
+
+        private static bool IsNormalRunTestsStart(JObject command)
+        {
+            string tool = command?["tool"]?.ToString();
+            var parameters = command?["params"] as JObject ?? new JObject();
+            return string.Equals(tool, "run_tests", StringComparison.OrdinalIgnoreCase)
+                   && !IsRunTestsRecovery(tool, parameters);
+        }
+
+        private static bool IsRunTestsRecovery(string tool, JObject parameters)
+        {
+            if (!string.Equals(tool, "run_tests", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            return RunTests.IsClearStuckRequest(parameters);
         }
 
         private static JObject NormalizeParameterKeys(JObject source)

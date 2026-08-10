@@ -36,6 +36,24 @@ namespace MCPForUnityTests.Editor.Services
             StringAssert.Contains("requires at least one explicit test filter", decision.Reason);
         }
 
+        [Test]
+        public void ClearStuck_BypassesStartFilterGuardButNormalRunStillRequiresFilter()
+        {
+            var recovery = SharedEditorCommandGuard.Evaluate("run_tests", new JObject
+            {
+                ["clear_stuck"] = true
+            });
+            var normalStart = SharedEditorCommandGuard.Evaluate("run_tests", new JObject
+            {
+                ["mode"] = "EditMode"
+            });
+
+            Assert.IsTrue(recovery.Allowed, "Recovery must not be mistaken for an unfiltered start.");
+            Assert.IsFalse(recovery.WarnOnly);
+            Assert.IsFalse(normalStart.Allowed);
+            StringAssert.Contains("requires at least one explicit test filter", normalStart.Reason);
+        }
+
         [TestCase("testNames")]
         [TestCase("groupNames")]
         [TestCase("categoryNames")]

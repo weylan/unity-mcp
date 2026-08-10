@@ -66,7 +66,9 @@ namespace MCPForUnity.Editor.Tools
                 });
             }
 
-            return SharedEditorOperationLock.BuildBusyResponse(result.BusyHolder, "manage_editor_lock:acquire");
+            return result.PersistenceFailed
+                ? SharedEditorOperationLock.BuildPersistenceFailedResponse("manage_editor_lock:acquire")
+                : SharedEditorOperationLock.BuildBusyResponse(result.BusyHolder, "manage_editor_lock:acquire");
         }
 
         private static object HandleRelease(ToolParams p)
@@ -83,7 +85,15 @@ namespace MCPForUnity.Editor.Tools
                 return new SuccessResponse("Lock released.", new { released = true });
             }
 
-            return new ErrorResponse("Token does not match current lock or no lock is held.", new { released = false });
+            if (SharedEditorOperationLock.TryGetMatchingAttachedToken(token, out var attachedHolder))
+            {
+                return SharedEditorOperationLock.BuildAttachedResponse(attachedHolder, "manage_editor_lock:release");
+            }
+            if (SharedEditorOperationLock.ValidateToken(token))
+            {
+                return SharedEditorOperationLock.BuildPersistenceFailedResponse("manage_editor_lock:release");
+            }
+            return SharedEditorOperationLock.BuildTokenInvalidResponse(token, "manage_editor_lock:release");
         }
 
         private static object HandleExtend(ToolParams p)
@@ -109,7 +119,15 @@ namespace MCPForUnity.Editor.Tools
                 });
             }
 
-            return new ErrorResponse("Token does not match current lock or no lock is held.", new { extended = false });
+            if (SharedEditorOperationLock.TryGetMatchingAttachedToken(token, out var attachedHolder))
+            {
+                return SharedEditorOperationLock.BuildAttachedResponse(attachedHolder, "manage_editor_lock:extend");
+            }
+            if (SharedEditorOperationLock.ValidateToken(token))
+            {
+                return SharedEditorOperationLock.BuildPersistenceFailedResponse("manage_editor_lock:extend");
+            }
+            return SharedEditorOperationLock.BuildTokenInvalidResponse(token, "manage_editor_lock:extend");
         }
 
         private static object HandleGetState()
@@ -124,12 +142,24 @@ namespace MCPForUnity.Editor.Tools
                 expires_at = state.Locked ? state.ExpiresAtUtc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ") : null,
                 expires_in_ms = state.ExpiresInMs,
                 is_explicit = state.IsExplicit,
+                is_attached_to_job = state.IsAttachedToJob,
+                physical_owner_job_id = state.AttachedJobId,
+                physical_owner_generation = state.AttachedJobGeneration,
+                fence_active = state.IsAttachedToJob,
+                safe_to_start_new_run = !state.IsAttachedToJob,
             });
         }
 
         private static object HandleForceRelease()
         {
-            var evicted = SharedEditorOperationLock.ForceRelease();
+            bool released = SharedEditorOperationLock.TryForceRelease(out var evicted);
+            if (!released)
+            {
+                return evicted.IsAttachedToJob
+                    ? SharedEditorOperationLock.BuildAttachedResponse(evicted, "manage_editor_lock:force_release")
+                    : SharedEditorOperationLock.BuildPersistenceFailedResponse("manage_editor_lock:force_release");
+            }
+
             if (!evicted.Locked)
             {
                 return new SuccessResponse("No lock was held.", new { was_locked = false });

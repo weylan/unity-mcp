@@ -262,6 +262,9 @@ namespace MCPForUnity.Editor.Services
         {
             try
             {
+                // Rehydrate a persisted physical TestRunner owner before the first readiness
+                // projection. Otherwise the first post-reload snapshot can briefly claim idle.
+                TestJobManager.EnsureInitialized();
                 _sequence = 0;
                 _observedUnixMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 _cached = BuildSnapshot("init");
@@ -319,7 +322,8 @@ namespace MCPForUnity.Editor.Services
             bool isPlaying = EditorApplication.isPlaying;
             bool isPaused = EditorApplication.isPaused;
             bool isUpdating = EditorApplication.isUpdating;
-            bool testsRunning = TestRunStatus.IsRunning;
+            TestRunStatus.Snapshot testStatus = TestRunStatus.GetSnapshot();
+            bool testsRunning = testStatus.IsRunning;
 
             var activityPhase = "idle";
             if (testsRunning)
@@ -402,8 +406,9 @@ namespace MCPForUnity.Editor.Services
             string scenePath = string.IsNullOrEmpty(scene.path) ? null : scene.path;
             string sceneGuid = !string.IsNullOrEmpty(scenePath) ? AssetDatabase.AssetPathToGUID(scenePath) : null;
 
-            bool testsRunning = TestRunStatus.IsRunning;
-            var testsMode = TestRunStatus.Mode?.ToString();
+            TestRunStatus.Snapshot testStatus = TestRunStatus.GetSnapshot();
+            bool testsRunning = testStatus.IsRunning;
+            var testsMode = testStatus.Mode?.ToString();
             string currentJobId = TestJobManager.CurrentJobId;
             bool isFocused = InternalEditorUtility.isApplicationActive;
 
@@ -492,12 +497,12 @@ namespace MCPForUnity.Editor.Services
                     IsRunning = testsRunning,
                     Mode = testsMode,
                     CurrentJobId = string.IsNullOrEmpty(currentJobId) ? null : currentJobId,
-                    StartedUnixMs = TestRunStatus.StartedUnixMs,
+                    StartedUnixMs = testStatus.StartedUnixMs,
                     StartedBy = "unknown",
-                    LastRun = TestRunStatus.FinishedUnixMs.HasValue
+                    LastRun = testStatus.FinishedUnixMs.HasValue
                         ? new EditorStateLastRun
                         {
-                            FinishedUnixMs = TestRunStatus.FinishedUnixMs,
+                            FinishedUnixMs = testStatus.FinishedUnixMs,
                             Result = "unknown",
                             Counts = null
                         }
@@ -519,12 +524,21 @@ namespace MCPForUnity.Editor.Services
 
         public static JObject GetSnapshot()
         {
+            TestRunStatus.Snapshot testStatus = TestRunStatus.GetSnapshot();
             lock (LockObj)
             {
                 // Defensive: if something went wrong early, rebuild once.
                 if (_cached == null)
                 {
                     _cached = BuildSnapshot("rebuild");
+                }
+
+                // Static-constructor ordering can leave an already-built cache behind a restored
+                // TestRunStatus. Rebuild before exposing that stale idle projection.
+                bool cachedTestsRunning = _cached["tests"]?["is_running"]?.Value<bool>() ?? false;
+                if (cachedTestsRunning != testStatus.IsRunning)
+                {
+                    _cached = BuildSnapshot("test_owner_rehydrated");
                 }
 
                 // Always return a fresh clone to prevent mutation bugs.

@@ -156,3 +156,11 @@ def test_mutating_tools_stay_gated(tools):
         f"{ungated}. Either they belong in AUTO_APPROVABLE with a comment saying why, "
         "or the annotation is wrong."
     )
+
+
+@pytest.mark.parametrize("name", ["run_tests", "manage_gameobject", "execute_code"])
+def test_local_lock_adaptation_keeps_selected_tools_gated_and_destructive(tools, name):
+    annotations = tools[name]["kwargs"]["annotations"]
+    assert _hint(annotations, "readOnlyHint") is not True
+    assert _hint(annotations, "destructiveHint") is True
+    assert name not in AUTO_APPROVABLE
