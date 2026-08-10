@@ -202,7 +202,7 @@ async def refresh_unity(
     compile: Annotated[Literal["none", "request"],
                        "Whether to request compilation"] = "none",
     wait_for_ready: Annotated[bool,
-                              "If true, wait until editor_state.advice.ready_for_tools is true"] = True,
+                              "If true, wait until mcpforunity://editor/state reports data.advice.ready_for_tools true"] = True,
     editor_lock_token: Annotated[str | None,
                                  "Token returned by manage_editor_lock acquire for multi-operation editor locks"] = None,
 ) -> MCPResponse | dict[str, Any]:
