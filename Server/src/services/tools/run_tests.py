@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
 from fastmcp import Context
@@ -16,16 +18,133 @@ from services.tools import get_unity_instance_from_context
 from services.tools.preflight import preflight
 import transport.unity_transport as unity_transport
 from transport.legacy.unity_connection import async_send_command_with_retry
+from transport.legacy.stdio_port_registry import stdio_port_registry
 from transport.plugin_hub import PluginHub
-from utils.focus_nudge import nudge_unity_focus, should_nudge, reset_nudge_backoff
+from utils.focus_nudge import (
+    FocusNudgeState,
+    nudge_unity_focus,
+    reset_nudge_backoff,
+    should_nudge,
+)
 
 logger = logging.getLogger(__name__)
 
-# Strong references to background fire-and-forget tasks to prevent premature GC.
-_background_tasks: set[asyncio.Task] = set()
+_NudgeKey = tuple[str, str, str]
+_MAX_NUDGE_STATES = 128
+_PROJECT_LOOKUP_RETRY_S = 5.0
 
 
-async def _get_unity_project_path(unity_instance: str | None) -> str | None:
+@dataclass
+class _JobNudgeState:
+    backoff: FocusNudgeState = field(default_factory=FocusNudgeState)
+    project_path: str | None = None
+    last_project_lookup_time: float = 0.0
+    last_seen_time: float = field(default_factory=time.monotonic)
+
+
+# A job may be polled concurrently by several clients. Keep one nudge task and
+# one backoff sequence per Unity instance/job instead of sharing module globals.
+_background_tasks: dict[_NudgeKey, asyncio.Task[bool]] = {}
+_nudge_states: dict[_NudgeKey, _JobNudgeState] = {}
+
+
+def _nudge_key(
+    unity_instance: str | None,
+    job_id: str,
+    user_id: str | None,
+) -> _NudgeKey:
+    return (user_id or "", unity_instance or "", job_id)
+
+
+def _get_job_nudge_state(key: _NudgeKey) -> _JobNudgeState:
+    now = time.monotonic()
+    existing = _nudge_states.get(key)
+    if existing is not None:
+        existing.last_seen_time = now
+        return existing
+
+    if len(_nudge_states) >= _MAX_NUDGE_STATES:
+        inactive_keys = [candidate for candidate in _nudge_states if candidate not in _background_tasks]
+        if inactive_keys:
+            oldest = min(
+                inactive_keys,
+                key=lambda candidate: _nudge_states[candidate].last_seen_time,
+            )
+            _nudge_states.pop(oldest, None)
+
+    state = _JobNudgeState(last_seen_time=now)
+    _nudge_states[key] = state
+    return state
+
+
+async def _get_job_project_path(
+    key: _NudgeKey,
+    unity_instance: str | None,
+    user_id: str | None,
+) -> tuple[str | None, bool]:
+    state = _get_job_nudge_state(key)
+    if state.project_path is not None:
+        return state.project_path, False
+
+    now = time.monotonic()
+    if (
+        state.last_project_lookup_time > 0
+        and now - state.last_project_lookup_time < _PROJECT_LOOKUP_RETRY_S
+    ):
+        return None, False
+
+    state.last_project_lookup_time = now
+    if user_id is None:
+        project_path = await _get_unity_project_path(unity_instance)
+    else:
+        project_path = await _get_unity_project_path(unity_instance, user_id=user_id)
+    if project_path is not None:
+        state.project_path = project_path
+    return project_path, True
+
+
+async def _perform_job_nudge(
+    key: _NudgeKey,
+    project_path: str,
+    state: FocusNudgeState,
+) -> bool:
+    try:
+        return await nudge_unity_focus(
+            unity_project_path=project_path,
+            backoff_state=state,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("Focus nudge failed for TestRunner job %s", key[2])
+        return False
+
+
+def _remove_finished_nudge(key: _NudgeKey, task: asyncio.Task[bool]) -> None:
+    if _background_tasks.get(key) is task:
+        _background_tasks.pop(key, None)
+
+
+def _get_or_start_job_nudge(key: _NudgeKey, project_path: str) -> asyncio.Task[bool]:
+    existing = _background_tasks.get(key)
+    if existing is not None and not existing.done():
+        return existing
+
+    state = _get_job_nudge_state(key)
+    task = asyncio.create_task(_perform_job_nudge(key, project_path, state.backoff))
+    _background_tasks[key] = task
+    task.add_done_callback(lambda done, task_key=key: _remove_finished_nudge(task_key, done))
+    return task
+
+
+def _forget_job_nudge_state(key: _NudgeKey) -> None:
+    _nudge_states.pop(key, None)
+
+
+async def _get_unity_project_path(
+    unity_instance: str | None,
+    user_id: str | None = None,
+) -> str | None:
     """Get the project root path for a Unity instance (for focus nudging).
 
     Args:
@@ -34,29 +153,35 @@ async def _get_unity_project_path(unity_instance: str | None) -> str | None:
     Returns:
         Project root path (e.g., "/Users/name/project"), or falls back to project_name if path unavailable
     """
-    if not unity_instance:
-        return None
-
     try:
-        registry = PluginHub._registry
-        if not registry:
-            return None
+        if unity_transport._is_http_transport():
+            registry = PluginHub._registry
+            if registry is None:
+                return None
+            session_id = await PluginHub._resolve_session_id(
+                unity_instance,
+                user_id=user_id,
+                retry_on_reload=False,
+            )
+            session = await registry.get_session(session_id)
+            if session is None:
+                return None
+            if session.project_path:
+                return session.project_path
+            return session.project_name if session.project_name else None
 
-        # Parse Name@hash format if present (middleware stores instances as "Name@hash")
-        target_hash = unity_instance
-        if "@" in target_hash:
-            _, _, target_hash = target_hash.rpartition("@")
-        if not target_hash:
+        instance = await asyncio.to_thread(
+            stdio_port_registry.get_instance,
+            unity_instance,
+        )
+        if instance is None:
             return None
-
-        # Get session by hash
-        session_id = await registry.get_session_id_by_hash(target_hash)
-        if not session_id:
-            return None
-
-        session = await registry.get_session(session_id)
-        if not session:
-            return None
+        if instance.path:
+            project_path = os.path.normpath(instance.path)
+            if os.path.basename(project_path).lower() == "assets":
+                project_path = os.path.dirname(project_path)
+            return project_path
+        return instance.name if instance.name else None
 
     except Exception as e:
         # Re-raise cancellation errors so task cancellation propagates
@@ -64,11 +189,6 @@ async def _get_unity_project_path(unity_instance: str | None) -> str | None:
             raise
         logger.debug(f"Could not get Unity project path: {e}")
         return None
-    else:
-        # Return full path if available, otherwise fall back to project name
-        if session.project_path:
-            return session.project_path
-        return session.project_name if session.project_name else None
 
 
 class RunTestsSummary(BaseModel):
@@ -298,6 +418,8 @@ async def get_test_job(
                             "Recommended: 30-60 seconds. Returns immediately if tests complete sooner."] = None,
 ) -> GetTestJobResponse | MCPResponse:
     unity_instance = await get_unity_instance_from_context(ctx)
+    user_id = await get_unity_instance_from_context(ctx, key="user_id")
+    nudge_key = _nudge_key(unity_instance, job_id, user_id)
 
     params: dict[str, Any] = {"job_id": job_id}
     if include_failed_tests:
@@ -315,33 +437,34 @@ async def get_test_job(
 
     # If wait_timeout is specified, poll server-side until complete or timeout
     if wait_timeout and wait_timeout > 0:
-        deadline = asyncio.get_event_loop().time() + wait_timeout
+        deadline = asyncio.get_running_loop().time() + wait_timeout
         poll_interval = 2.0  # Poll Unity every 2 seconds
         prev_last_update_unix_ms = None
-
-        # Get project path once for focus nudging (multi-instance support)
-        project_path = await _get_unity_project_path(unity_instance)
 
         while True:
             response = await _fetch_status()
 
             if not isinstance(response, dict):
+                _forget_job_nudge_state(nudge_key)
                 return MCPResponse(success=False, error=str(response))
 
             if not response.get("success", True):
+                _forget_job_nudge_state(nudge_key)
                 return MCPResponse(**response)
 
             # Check if tests are done
             data = response.get("data", {})
-            status = data.get("status", "")
             if _is_physical_terminal(data):
+                _forget_job_nudge_state(nudge_key)
                 return GetTestJobResponse(**response)
 
             # Detect progress and reset exponential backoff
             last_update_unix_ms = data.get("last_update_unix_ms")
             if prev_last_update_unix_ms is not None and last_update_unix_ms != prev_last_update_unix_ms:
                 # Progress detected - reset exponential backoff for next potential stall
-                reset_nudge_backoff()
+                state = _nudge_states.get(nudge_key)
+                if state is not None:
+                    reset_nudge_backoff(state.backoff)
                 logger.debug(f"Test job {job_id} made progress - reset nudge backoff")
             prev_last_update_unix_ms = last_update_unix_ms
 
@@ -361,16 +484,36 @@ async def get_test_job(
                 # Use default stall_threshold_ms (3s)
             ):
                 logger.info(f"Test job {job_id} appears stalled (unfocused Unity), attempting nudge...")
-                # Lazily resolve project path if not yet available (registry may have become ready)
+                project_path, lookup_attempted = await _get_job_project_path(
+                    nudge_key,
+                    unity_instance,
+                    user_id,
+                )
                 if project_path is None:
-                    project_path = await _get_unity_project_path(unity_instance)
-                # Pass project path for multi-instance support
-                nudged = await nudge_unity_focus(unity_project_path=project_path)
-                if nudged:
-                    logger.info(f"Test job {job_id} nudge completed")
+                    if lookup_attempted:
+                        logger.warning(
+                            "Skipping focus nudge for TestRunner job %s because its Unity project identity is unavailable",
+                            job_id,
+                        )
+                else:
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    if remaining <= 0:
+                        return GetTestJobResponse(**response)
+                    nudge_task = _get_or_start_job_nudge(nudge_key, project_path)
+                    try:
+                        nudged = await asyncio.wait_for(
+                            asyncio.shield(nudge_task),
+                            timeout=remaining,
+                        )
+                    except asyncio.TimeoutError:
+                        # The shielded nudge keeps running so it can restore the
+                        # original app, while this poll honors wait_timeout.
+                        return GetTestJobResponse(**response)
+                    if nudged:
+                        logger.info(f"Test job {job_id} nudge completed")
 
             # Check timeout
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 # Timeout reached, return current status
                 return GetTestJobResponse(**response)
@@ -381,14 +524,20 @@ async def get_test_job(
     # No wait_timeout - return immediately (original behavior)
     response = await _fetch_status()
     if not isinstance(response, dict):
+        _forget_job_nudge_state(nudge_key)
         return MCPResponse(success=False, error=str(response))
     if not response.get("success", True):
+        _forget_job_nudge_state(nudge_key)
         return MCPResponse(**response)
 
     # Fire-and-forget nudge check: even without wait_timeout, clients may poll
     # externally. Check if Unity needs a nudge on every call so stalls get
     # detected regardless of polling style.
     data = response.get("data", {})
+    if _is_physical_terminal(data):
+        _forget_job_nudge_state(nudge_key)
+        return GetTestJobResponse(**response)
+
     status = _physical_nudge_status(data)
     if status == "running":
         progress = data.get("progress") or {}
@@ -402,9 +551,18 @@ async def get_test_job(
             current_time_ms=current_time_ms,
         ):
             logger.info(f"Test job {job_id} appears stalled (unfocused Unity), scheduling background nudge...")
-            project_path = await _get_unity_project_path(unity_instance)
-            task = asyncio.create_task(nudge_unity_focus(unity_project_path=project_path))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+            project_path, lookup_attempted = await _get_job_project_path(
+                nudge_key,
+                unity_instance,
+                user_id,
+            )
+            if project_path is None:
+                if lookup_attempted:
+                    logger.warning(
+                        "Skipping focus nudge for TestRunner job %s because its Unity project identity is unavailable",
+                        job_id,
+                    )
+            else:
+                _get_or_start_job_nudge(nudge_key, project_path)
 
     return GetTestJobResponse(**response)

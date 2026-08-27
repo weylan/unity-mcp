@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import platform
+import re
 import shutil
 import subprocess
 import time
@@ -54,11 +55,23 @@ _last_progress_time: float = 0.0
 
 
 @dataclass
+class FocusNudgeState:
+    """Backoff state for one Unity TestRunner job."""
+
+    last_nudge_time: float = 0.0
+    consecutive_nudges: int = 0
+    last_attempt_time: float = 0.0
+    consecutive_attempts: int = 0
+    last_progress_time: float = 0.0
+
+
+@dataclass
 class _FrontmostAppInfo:
     """Info about the frontmost application for focus restore."""
 
     name: str
     bundle_id: str | None = None  # macOS only: bundle identifier for precise activation
+    pid: int | None = None  # macOS only: process identity for multi-instance verification
 
     def __str__(self) -> str:
         return self.name
@@ -77,7 +90,7 @@ def _is_available() -> bool:
     return False
 
 
-def _get_current_nudge_interval() -> float:
+def _get_current_nudge_interval(backoff_state: FocusNudgeState | None = None) -> float:
     """
     Calculate current nudge interval using exponential backoff.
 
@@ -87,15 +100,20 @@ def _get_current_nudge_interval() -> float:
     - 2 nudges: base * 4 (4.0s)
     - 3+ nudges: base * 8 (8.0s, capped at max)
     """
-    if _consecutive_nudges == 0:
+    consecutive_nudges = (
+        backoff_state.consecutive_attempts
+        if backoff_state is not None
+        else _consecutive_nudges
+    )
+    if consecutive_nudges == 0:
         return _BASE_NUDGE_INTERVAL_S
 
     # Exponential backoff: interval = base * (2 ^ consecutive_nudges)
-    interval = _BASE_NUDGE_INTERVAL_S * (2 ** _consecutive_nudges)
+    interval = _BASE_NUDGE_INTERVAL_S * (2 ** consecutive_nudges)
     return min(interval, _MAX_NUDGE_INTERVAL_S)
 
 
-def _get_current_focus_duration() -> float:
+def _get_current_focus_duration(backoff_state: FocusNudgeState | None = None) -> float:
     """
     Calculate current focus duration using exponential backoff.
 
@@ -106,7 +124,12 @@ def _get_current_focus_duration() -> float:
     """
     # Base durations for each nudge level
     base_durations = [3.0, 5.0, 8.0, 12.0]
-    base_duration = base_durations[min(_consecutive_nudges, len(base_durations) - 1)]
+    consecutive_nudges = (
+        backoff_state.consecutive_nudges
+        if backoff_state is not None
+        else _consecutive_nudges
+    )
+    base_duration = base_durations[min(consecutive_nudges, len(base_durations) - 1)]
 
     # Scale by ratio of configured to default duration (if UNITY_MCP_NUDGE_DURATION_S is set)
     scale = 1.0
@@ -120,16 +143,25 @@ def _get_current_focus_duration() -> float:
     return duration
 
 
-def reset_nudge_backoff() -> None:
+def reset_nudge_backoff(backoff_state: FocusNudgeState | None = None) -> None:
     """
     Reset exponential backoff when progress is detected.
 
     Call this when test job makes progress to reset the nudge interval
     back to the base interval for quick response to future stalls.
     """
+    now = time.monotonic()
+    if backoff_state is not None:
+        backoff_state.consecutive_nudges = 0
+        backoff_state.last_nudge_time = 0.0
+        backoff_state.consecutive_attempts = 0
+        backoff_state.last_attempt_time = 0.0
+        backoff_state.last_progress_time = now
+        return
+
     global _consecutive_nudges, _last_progress_time
     _consecutive_nudges = 0
-    _last_progress_time = time.monotonic()
+    _last_progress_time = now
 
 
 def _get_frontmost_app_macos() -> _FrontmostAppInfo | None:
@@ -151,7 +183,8 @@ def _get_frontmost_app_macos() -> _FrontmostAppInfo | None:
                 '        set bID to bundle identifier of frontProc\n'
                 '        if bID is not missing value then set bundleID to bID\n'
                 '    end try\n'
-                '    return procName & "|" & bundleID\n'
+                '    set procPID to unix id of frontProc\n'
+                '    return procName & "|" & bundleID & "|" & procPID\n'
                 'end tell',
             ],
             capture_output=True,
@@ -160,7 +193,7 @@ def _get_frontmost_app_macos() -> _FrontmostAppInfo | None:
         )
         if result.returncode == 0:
             output = result.stdout.strip()
-            parts = output.split("|", 1)
+            parts = output.split("|", 2)
             name = parts[0]
             bundle_id: str | None = None
             if len(parts) > 1:
@@ -168,7 +201,13 @@ def _get_frontmost_app_macos() -> _FrontmostAppInfo | None:
                 # Some processes report "missing value" as bundle ID; treat as absent
                 if raw_bundle_id and raw_bundle_id.lower() != "missing value":
                     bundle_id = raw_bundle_id
-            return _FrontmostAppInfo(name=name, bundle_id=bundle_id)
+            pid: int | None = None
+            if len(parts) > 2:
+                try:
+                    pid = int(parts[2].strip())
+                except ValueError:
+                    pass
+            return _FrontmostAppInfo(name=name, bundle_id=bundle_id, pid=pid)
     except Exception as e:
         logger.debug(f"Failed to get frontmost app: {e}")
     return None
@@ -198,30 +237,30 @@ def _find_unity_pid_by_project_path(project_path: str) -> int | None:
 
         # Determine if project_path is a full path or just a name
         is_full_path = "/" in project_path or "\\" in project_path
+        target_path = os.path.normpath(project_path)
+        project_path_pattern = re.compile(
+            r"(?:^|\s)-projectpath(?:\s+|=)(.+?)(?=\s+-[A-Za-z]|$)",
+            re.IGNORECASE,
+        )
 
-        # Look for Unity.app processes with matching -projectpath
+        # Look for Unity.app processes with matching -projectPath. Unity emits a
+        # capital P, but older versions and hand-launched commands may not.
         for line in result.stdout.splitlines():
             if "Unity.app/Contents/MacOS/Unity" not in line:
                 continue
 
-            # Check for -projectpath argument
-            if "-projectpath" not in line:
+            match = project_path_pattern.search(line)
+            if match is None:
                 continue
+            candidate_path = match.group(1).strip().strip("\"'")
 
             if is_full_path:
-                # Exact match for full path
-                if f"-projectpath {project_path}" not in line:
+                if os.path.normpath(candidate_path) != target_path:
                     continue
             else:
-                # Match if path ends with project name (e.g., ".../UnityMCPTests")
-                if "-projectpath" in line:
-                    # Extract the path after -projectpath
-                    try:
-                        parts = line.split("-projectpath", 1)[1].split()[0]
-                        if not parts.endswith(f"/{project_path}") and not parts.endswith(f"\\{project_path}") and parts != project_path:
-                            continue
-                    except (IndexError, ValueError):
-                        continue
+                normalized_candidate = candidate_path.replace("\\", "/").rstrip("/")
+                if normalized_candidate.rsplit("/", 1)[-1] != project_path:
+                    continue
 
             # Extract PID (second column in ps aux output)
             parts = line.split()
@@ -244,6 +283,7 @@ def _focus_app_macos(
     app_name: str,
     unity_project_path: str | None = None,
     bundle_id: str | None = None,
+    unity_pid: int | None = None,
 ) -> bool:
     """Focus an application on macOS.
 
@@ -257,16 +297,22 @@ def _focus_app_macos(
             -projectpath command line arg (e.g., "/path/to/project" NOT "/path/to/project/Assets")
         bundle_id: Bundle identifier for precise activation (e.g. "com.microsoft.VSCode").
             Preferred over app_name for non-Unity apps.
+        unity_pid: Already-resolved Unity PID, used to avoid resolving a target twice
+            and to restore a previously frontmost Unity instance precisely.
     """
     try:
         # For Unity, use PID-based activation for precise targeting
         if app_name == "Unity":
-            if unity_project_path:
-                # Find specific Unity instance by project path
-                pid = _find_unity_pid_by_project_path(unity_project_path)
+            if unity_project_path or unity_pid is not None:
+                pid = unity_pid
+                if pid is None and unity_project_path:
+                    pid = _find_unity_pid_by_project_path(unity_project_path)
                 if pid is None:
-                    logger.warning(f"Could not find Unity PID for project {unity_project_path}, falling back to any Unity")
-                    return _focus_any_unity_macos()
+                    logger.warning(
+                        "Could not find Unity PID for project %s; refusing to focus an unrelated Unity process",
+                        unity_project_path,
+                    )
+                    return False
 
                 # Two-step activation for full Unity wake-up:
                 # 1. Bring window to front
@@ -292,7 +338,11 @@ tell application id bundleID to activate
                 if result.returncode != 0:
                     logger.debug(f"Failed to activate Unity PID {pid}: {result.stderr}")
                     return False
-                logger.info(f"Activated Unity instance with PID {pid} for project {unity_project_path}")
+                logger.info(
+                    "Activated Unity instance with PID %s%s",
+                    pid,
+                    f" for project {unity_project_path}" if unity_project_path else "",
+                )
                 return True
             else:
                 # No project path provided - activate any Unity process
@@ -336,7 +386,7 @@ def _focus_any_unity_macos() -> bool:
     try:
         script = '''
 tell application "System Events"
-    set unityProc to first process whose name contains "Unity"
+    set unityProc to first process whose name is "Unity"
     set frontmost of unityProc to true
 end tell
 '''
@@ -458,20 +508,28 @@ def _get_frontmost_app_linux() -> _FrontmostAppInfo | None:
     return None
 
 
+def _find_unity_window_linux() -> str | None:
+    """Find the first Unity Editor window ID."""
+    try:
+        result = subprocess.run(
+            ["xdotool", "search", "--name", "Unity"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().split("\n")[0]
+    except Exception as e:
+        logger.debug(f"Failed to find Unity window: {e}")
+    return None
+
+
 def _focus_app_linux(window_id: str) -> bool:
     """Focus a window by ID on Linux, or Unity by name."""
     try:
         if window_id == "Unity":
-            # Find Unity window by name pattern
-            result = subprocess.run(
-                ["xdotool", "search", "--name", "Unity"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                window_id = result.stdout.strip().split("\n")[0]
-            else:
+            window_id = _find_unity_window_linux()
+            if window_id is None:
                 return False
 
         result = subprocess.run(
@@ -501,6 +559,9 @@ def _get_frontmost_app() -> _FrontmostAppInfo | None:
 def _focus_app(
     app_info: _FrontmostAppInfo | str,
     unity_project_path: str | None = None,
+    *,
+    unity_pid: int | None = None,
+    linux_window_id: str | None = None,
 ) -> bool:
     """Focus an application/window (platform-specific).
 
@@ -514,18 +575,48 @@ def _focus_app(
 
     system = platform.system()
     if system == "Darwin":
-        return _focus_app_macos(app_info.name, unity_project_path, app_info.bundle_id)
+        return _focus_app_macos(
+            app_info.name,
+            unity_project_path,
+            app_info.bundle_id,
+            unity_pid,
+        )
     elif system == "Windows":
         return _focus_app_windows(app_info.name)
     elif system == "Linux":
-        return _focus_app_linux(app_info.name)
+        target = linux_window_id if app_info.name == "Unity" and linux_window_id else app_info.name
+        return _focus_app_linux(target)
     return False
+
+
+def _is_unity_editor_frontmost(app_info: _FrontmostAppInfo) -> bool:
+    """Return whether the frontmost process/window belongs to Unity Editor."""
+    normalized_name = app_info.name.strip().lower()
+    if "unity hub" in normalized_name:
+        return False
+    if platform.system() == "Darwin":
+        return normalized_name == "unity"
+    return "unity" in normalized_name
+
+
+def _is_target_unity_frontmost(
+    app_info: _FrontmostAppInfo,
+    *,
+    unity_pid: int | None = None,
+    linux_window_id: str | None = None,
+) -> bool:
+    if unity_pid is not None:
+        return app_info.pid == unity_pid
+    if linux_window_id is not None:
+        return app_info.name == linux_window_id
+    return _is_unity_editor_frontmost(app_info)
 
 
 async def nudge_unity_focus(
     focus_duration_s: float | None = None,
     force: bool = False,
     unity_project_path: str | None = None,
+    backoff_state: FocusNudgeState | None = None,
 ) -> bool:
     """
     Temporarily focus Unity to allow it to process, then return focus.
@@ -543,13 +634,15 @@ async def nudge_unity_focus(
         unity_project_path: Full path to Unity project root for multi-instance support.
             e.g., "/Users/name/project" (NOT "/Users/name/project/Assets")
             If None, targets any Unity process.
+        backoff_state: Optional job-scoped backoff state. Callers managing multiple
+            TestRunner jobs should provide a distinct state for each job.
 
     Returns:
         True if nudge was performed, False if skipped or failed
     """
     if focus_duration_s is None:
         # Use exponential backoff for focus duration
-        focus_duration_s = _get_current_focus_duration()
+        focus_duration_s = _get_current_focus_duration(backoff_state)
     if focus_duration_s <= 0:
         focus_duration_s = _DEFAULT_FOCUS_DURATION_S
     global _last_nudge_time, _consecutive_nudges
@@ -560,55 +653,123 @@ async def nudge_unity_focus(
 
     # Rate limit nudges using exponential backoff
     now = time.monotonic()
-    current_interval = _get_current_nudge_interval()
-    if not force and (now - _last_nudge_time) < current_interval:
+    current_interval = _get_current_nudge_interval(backoff_state)
+    last_attempt_time = (
+        max(backoff_state.last_nudge_time, backoff_state.last_attempt_time)
+        if backoff_state is not None
+        else _last_nudge_time
+    )
+    consecutive_attempts = (
+        backoff_state.consecutive_attempts
+        if backoff_state is not None
+        else _consecutive_nudges
+    )
+    if not force and (now - last_attempt_time) < current_interval:
         logger.debug(f"Skipping nudge - too soon since last nudge (interval: {current_interval:.1f}s)")
         return False
 
+    if backoff_state is not None:
+        backoff_state.last_attempt_time = now
+        backoff_state.consecutive_attempts += 1
+
+    system = platform.system()
+    unity_pid: int | None = None
+    linux_window_id: str | None = None
+    if system == "Darwin" and unity_project_path:
+        unity_pid = await asyncio.to_thread(
+            _find_unity_pid_by_project_path,
+            unity_project_path,
+        )
+        if unity_pid is None:
+            logger.warning(
+                "Could not resolve Unity Editor for project %s",
+                unity_project_path,
+            )
+            return False
+    elif system == "Linux":
+        linux_window_id = await asyncio.to_thread(_find_unity_window_linux)
+        if linux_window_id is None:
+            logger.warning("Could not resolve a Unity Editor window")
+            return False
+
+    focus_kwargs: dict[str, int | str] = {}
+    if unity_pid is not None:
+        focus_kwargs["unity_pid"] = unity_pid
+    if linux_window_id is not None:
+        focus_kwargs["linux_window_id"] = linux_window_id
+
     # Get current frontmost app
-    original_app = _get_frontmost_app()
+    original_app = await asyncio.to_thread(_get_frontmost_app)
     if original_app is None:
         logger.debug("Could not determine frontmost app")
         return False
 
     # Check if Unity is already focused (no nudge needed)
-    if "Unity" in original_app.name:
+    if _is_target_unity_frontmost(
+        original_app,
+        unity_pid=unity_pid,
+        linux_window_id=linux_window_id,
+    ):
         logger.debug("Unity already focused, no nudge needed")
         return False
 
     project_info = f" for {unity_project_path}" if unity_project_path else ""
-    logger.info(f"Nudging Unity focus{project_info} (interval: {current_interval:.1f}s, consecutive: {_consecutive_nudges}, duration: {focus_duration_s:.1f}s, will return to {original_app})")
+    logger.info(f"Nudging Unity focus{project_info} (interval: {current_interval:.1f}s, consecutive: {consecutive_attempts}, duration: {focus_duration_s:.1f}s, will return to {original_app})")
 
     # Focus Unity (with optional project path for multi-instance support)
-    if not _focus_app("Unity", unity_project_path):
+    if not await asyncio.to_thread(
+        _focus_app,
+        "Unity",
+        unity_project_path,
+        **focus_kwargs,
+    ):
         logger.warning(f"Failed to focus Unity{project_info}")
         return False
 
-    # Wait for window switch animation to complete before starting timer
-    # macOS activate is asynchronous, so Unity might not be visible yet
-    await asyncio.sleep(0.5)
+    try:
+        # macOS activation is asynchronous, so verify the frontmost process after
+        # its window-switch animation before counting or waiting on the nudge.
+        await asyncio.sleep(0.5)
+        current_app = await asyncio.to_thread(_get_frontmost_app)
+        if current_app is None or not _is_target_unity_frontmost(
+            current_app,
+            unity_pid=unity_pid,
+            linux_window_id=linux_window_id,
+        ):
+            logger.warning(
+                "Unity activation didn't complete - current app is %s",
+                current_app or "unknown",
+            )
+            return False
 
-    # Verify Unity is actually focused now
-    current_app = _get_frontmost_app()
-    if current_app and "Unity" not in current_app.name:
-        logger.warning(f"Unity activation didn't complete - current app is {current_app}")
-        # Continue anyway in case Unity is processing in background
-
-    # Only update state after successful activation attempt
-    _last_nudge_time = now
-    _consecutive_nudges += 1
-
-    # Wait for Unity to process (actual working time)
-    await asyncio.sleep(focus_duration_s)
-
-    # Return focus to original app
-    if original_app and original_app.name != "Unity":
-        if _focus_app(original_app):
-            logger.info(f"Returned focus to {original_app} after {focus_duration_s:.1f}s Unity focus")
+        if backoff_state is not None:
+            backoff_state.last_nudge_time = time.monotonic()
+            backoff_state.consecutive_nudges += 1
         else:
-            logger.warning(f"Failed to return focus to {original_app}")
+            _last_nudge_time = time.monotonic()
+            _consecutive_nudges += 1
 
-    return True
+        await asyncio.sleep(focus_duration_s)
+        return True
+    finally:
+        # Cancellation and failed verification must not strand Unity in front.
+        if not _is_target_unity_frontmost(
+            original_app,
+            unity_pid=unity_pid,
+            linux_window_id=linux_window_id,
+        ):
+            restored = await asyncio.to_thread(
+                _focus_app,
+                original_app,
+                unity_pid=original_app.pid,
+            )
+            if restored:
+                logger.info(
+                    "Returned focus to %s after Unity focus attempt",
+                    original_app,
+                )
+            else:
+                logger.warning(f"Failed to return focus to {original_app}")
 
 
 def should_nudge(

@@ -6,7 +6,7 @@
   "unity": "2021.3",
   "documentationUrl": "https://github.com/CoplayDev/unity-mcp",
   "licensesUrl": "https://github.com/CoplayDev/unity-mcp/blob/main/LICENSE",
-  "mcpServerPackageSource": "git+https://github.com/weylan/unity-mcp.git@gameempire-mcp-v20260811.1#subdirectory=Server",
+  "mcpServerPackageSource": "git+https://github.com/weylan/unity-mcp.git@gameempire-mcp-v20260827.1#subdirectory=Server",
   "dependencies": {
     "com.unity.modules.animation": "1.0.0",
     "com.unity.modules.imageconversion": "1.0.0",
