@@ -3,7 +3,9 @@ name: Docs — Build & Deploy
 # Builds the Docusaurus site under /website and, on push to beta, deploys
 # to GitHub Pages at https://coplaydev.github.io/unity-mcp/.
 #
-# PR runs only build (no deploy) as a preview-validation step.
+# Forks and PRs run only the build. GitHub Pages deployment is owned by the
+# upstream CoplayDev repository, whose Docusaurus URL/organization settings
+# are the canonical deployment target.
 # Re-deploys also fire when the Python tool/resource registry changes,
 # so M3's auto-generated reference pages stay fresh.
 
@@ -65,7 +67,7 @@ jobs:
         run: npm ci
 
       - name: Setup Pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/beta'
+        if: github.repository == 'CoplayDev/unity-mcp' && github.event_name == 'push' && github.ref == 'refs/heads/beta'
         uses: actions/configure-pages@v5
 
       - name: Build
@@ -78,7 +80,7 @@ jobs:
         run: npm run build
 
       - name: Upload Pages artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/beta'
+        if: github.repository == 'CoplayDev/unity-mcp' && github.event_name == 'push' && github.ref == 'refs/heads/beta'
         uses: actions/upload-pages-artifact@v3
         with:
           path: website/build
@@ -86,7 +88,7 @@ jobs:
   deploy:
     name: Deploy to GitHub Pages
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/beta'
+    if: github.repository == 'CoplayDev/unity-mcp' && github.event_name == 'push' && github.ref == 'refs/heads/beta'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -51,11 +51,11 @@ jobs:
 
       - name: Sync Server deps
         working-directory: Server
-        run: uv sync
+        run: uv sync --python 3.10 --frozen
 
       - name: Drift check
         working-directory: Server
-        run: uv run python ../tools/generate_docs_reference.py --check
+        run: uv run --python 3.10 python ../tools/generate_docs_reference.py --check
 
       - name: Tool-count sanity
         run: |

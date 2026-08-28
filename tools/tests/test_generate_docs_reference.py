@@ -5,7 +5,7 @@ _TOOLS_DIR = Path(__file__).resolve().parents[1]
 if str(_TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(_TOOLS_DIR))
 
-from generate_docs_reference import _diff_trees, _write  # noqa: E402
+from generate_docs_reference import _diff_trees, _render_type, _write  # noqa: E402
 
 
 def test_write_uses_lf_line_endings(tmp_path):
@@ -25,3 +25,8 @@ def test_diff_trees_ignores_platform_line_endings(tmp_path):
     (generated / "index.md").write_bytes(b"first\nsecond\n\n")
 
     assert _diff_trees(committed, generated) == []
+
+
+def test_render_pep604_union_with_bare_containers():
+    assert _render_type(list | float | None) == "list[Any] | float | None"
+    assert _render_type(dict | bool | None) == "dict[Any] | bool | None"
