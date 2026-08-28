@@ -22,6 +22,7 @@ Controls and queries the Unity editor's state and settings. Read-only actions: t
 | `tool_name` | `str \| None` | — | Tool name when setting active tool |
 | `tag_name` | `str \| None` | — | Tag name when adding and removing tags |
 | `layer_name` | `str \| None` | — | Layer name when adding and removing layers |
+| `editor_lock_token` | `str \| None` | — | Token returned by manage_editor_lock acquire for multi-operation editor locks |
 
 ## Returns
 

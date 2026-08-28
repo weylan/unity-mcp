@@ -22,6 +22,7 @@ Executes multiple MCP commands in a single batch for dramatically better perform
 | `parallel` | `bool \| None` | — | Attempt to run read-only commands in parallel |
 | `fail_fast` | `bool \| None` | — | Stop processing after the first failure |
 | `max_parallelism` | `int \| None` | — | Hint for the maximum number of parallel workers |
+| `editor_lock_token` | `str \| None` | — | Token returned by manage_editor_lock acquire for the whole batch |
 
 ## Returns
 

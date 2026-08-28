@@ -88,6 +88,7 @@ SKYBOX / ENVIRONMENT:
 | `fog_end` | `float \| None` | — | Fog end distance (Linear mode). |
 | `bounces` | `int \| None` | — | Reflection bounces. |
 | `reflection_mode` | `str \| None` | — | Default reflection mode: Skybox, Custom. |
+| `editor_lock_token` | `str \| None` | — | Token returned by manage_editor_lock acquire for multi-operation editor locks. |
 
 ## Returns
 

@@ -28,6 +28,7 @@ const sidebars = {
         'guides/client-configurators',
         'guides/multi-instance',
         'guides/tool-groups',
+        'guides/playmode-testing',
         'guides/cli',
         'guides/cli-examples',
         'guides/custom-tools',

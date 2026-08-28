@@ -41,7 +41,7 @@ Full history: [Release Notes](https://coplaydev.github.io/unity-mcp/releases).
 
 ## What it does
 
-Control the Unity Editor in natural language from any MCP client — create scenes & GameObjects, edit C# scripts, manage assets, run tests, profile, and build. 47 focused MCP tool entrypoints, any client, free & MIT.
+Control the Unity Editor in natural language from any MCP client — create scenes & GameObjects, edit C# scripts, manage assets, run tests, profile, and build. 51 focused MCP tool entrypoints, any client, free & MIT.
 
 **[Browse the full tool catalog →](https://coplaydev.github.io/unity-mcp/reference/tools/)**
 
@@ -73,6 +73,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Branch off `beta`, not `main`. The full 
 
 - **Multiple Unity instances** — [Multi-Instance Routing](https://coplaydev.github.io/unity-mcp/guides/multi-instance)
 - **Tool groups (vfx / animation / ui / testing / etc.)** — [Tool Groups](https://coplaydev.github.io/unity-mcp/guides/tool-groups)
+- **Editor Play Mode state, input, waits, and sequences** — [Play Mode Testing](https://coplaydev.github.io/unity-mcp/guides/playmode-testing)
 - **v10 asset generation and upgrade notes** — [v10 Migration](https://coplaydev.github.io/unity-mcp/migrations/v10)
 - **Roslyn script validation** — [Roslyn Validation](https://coplaydev.github.io/unity-mcp/guides/roslyn)
 - **Remote-hosted server with auth** — [Remote Server Auth](https://coplaydev.github.io/unity-mcp/guides/remote-server-auth)

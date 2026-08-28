@@ -22,6 +22,7 @@ Request a Unity asset database refresh and optionally a script compilation. Can 
 | `scope` | `Literal['assets', 'scripts', 'all']` | — | Refresh scope |
 | `compile` | `Literal['none', 'request']` | — | Whether to request compilation |
 | `wait_for_ready` | `bool` | — | If true, wait until mcpforunity://editor/state reports data.advice.ready_for_tools true |
+| `editor_lock_token` | `str \| None` | — | Token returned by manage_editor_lock acquire for multi-operation editor locks |
 
 ## Returns
 

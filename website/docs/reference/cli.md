@@ -70,6 +70,7 @@ The CLI mirrors the MCP tool catalog. Each command group wraps one or more `mana
 | `mcp-for-unity packages` | UPM install/remove/embed | [`manage_packages`](/reference/tools/core/manage_packages) |
 | `mcp-for-unity probuilder` | ProBuilder meshes | [`manage_probuilder`](/reference/tools/probuilder/manage_probuilder) |
 | `mcp-for-unity profiler` | Profiler session + counters + snapshots | [`manage_profiler`](/reference/tools/profiling/manage_profiler) |
+| `mcp-for-unity playmode` | Runtime state, input simulation, waits, and action sequences in Editor Play Mode | [`manage_playmode_test`](/reference/tools/testing/manage_playmode_test) |
 | `mcp-for-unity code` | Execute arbitrary C# in the Editor | [`execute_code`](/reference/tools/scripting_ext/execute_code) |
 | `mcp-for-unity batch` | Run multiple operations atomically | [`batch_execute`](/reference/tools/core/batch_execute) |
 | `mcp-for-unity tool` | Activate/deactivate tool groups | [`manage_tools`](/reference/tools/core/manage_tools) |

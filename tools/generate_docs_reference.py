@@ -466,7 +466,8 @@ def _write(path: Path, content: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.read_text(encoding="utf-8") == content:
         return False
-    path.write_text(content, encoding="utf-8")
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
     return True
 
 
@@ -557,6 +558,12 @@ def _copytree_into(src: Path, dst: Path) -> None:
 def _diff_trees(a: Path, b: Path) -> list[str]:
     diffs: list[str] = []
 
+    def _text_equal(left: Path, right: Path) -> bool:
+        try:
+            return left.read_text(encoding="utf-8").rstrip() == right.read_text(encoding="utf-8").rstrip()
+        except (OSError, UnicodeError):
+            return False
+
     def _walk(rel: Path) -> None:
         cmp = filecmp.dircmp(a / rel, b / rel)
         for name in cmp.left_only:
@@ -564,7 +571,8 @@ def _diff_trees(a: Path, b: Path) -> list[str]:
         for name in cmp.right_only:
             diffs.append(f"generated-only: {rel / name}")
         for name in cmp.diff_files:
-            diffs.append(f"differs: {rel / name}")
+            if not _text_equal(a / rel / name, b / rel / name):
+                diffs.append(f"differs: {rel / name}")
         for name in cmp.common_dirs:
             _walk(rel / name)
 

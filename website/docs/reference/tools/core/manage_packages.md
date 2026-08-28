@@ -46,6 +46,7 @@ UTILITY:
 | `name` | `str \| None` | — | Registry name for add_registry/remove_registry. |
 | `url` | `str \| None` | — | Registry URL for add_registry. |
 | `scopes` | `list[str] \| None` | — | Registry scopes for add_registry. |
+| `editor_lock_token` | `str \| None` | — | Token returned by manage_editor_lock acquire for multi-operation editor locks. |
 
 ## Returns
 

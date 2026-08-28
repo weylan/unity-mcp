@@ -34,6 +34,7 @@ Manage Unity player builds — trigger builds, switch platforms, configure setti
 | `profiles` | `str \| None` | — | JSON array of profile paths for batch build (Unity 6+) |
 | `output_dir` | `str \| None` | — | Base output directory for batch builds |
 | `job_id` | `str \| None` | — | Job ID for status/cancel |
+| `editor_lock_token` | `str \| None` | — | Token returned by manage_editor_lock acquire for multi-operation editor locks |
 
 ## Returns
 

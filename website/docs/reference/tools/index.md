@@ -24,7 +24,7 @@ AI asset generation – 3D model gen/import, 2D image gen & audio gen (bring-you
 - **[`import_model`](./asset_gen/import_model.md)** — Import 3D models from the Sketchfab marketplace into the Unity project.
 - **[`import_model_file`](./asset_gen/import_model_file.md)** — Import a local 3D model file that already exists on disk (e.g. an FBX/OBJ/glTF exported from Blender or another DCC tool) into the Unity project.
 
-## `core` &nbsp; (30 tools)
+## `core` &nbsp; (31 tools)
 Essential scene, script, asset & editor tools (always on by default)
 - **[`apply_text_edits`](./core/apply_text_edits.md)** — Apply small text edits to a C# script identified by URI.
 - **[`batch_execute`](./core/batch_execute.md)** — Executes multiple MCP commands in a single batch for dramatically better performance.
@@ -41,6 +41,7 @@ Essential scene, script, asset & editor tools (always on by default)
 - **[`manage_camera`](./core/manage_camera.md)** — Manage cameras (Unity Camera + Cinemachine).
 - **[`manage_components`](./core/manage_components.md)** — Add, remove, or set properties on components attached to GameObjects.
 - **[`manage_editor`](./core/manage_editor.md)** — Controls and queries the Unity editor's state and settings.
+- **[`manage_editor_lock`](./core/manage_editor_lock.md)** — Manage the shared Unity editor operation lock.
 - **[`manage_gameobject`](./core/manage_gameobject.md)** — Performs CRUD operations on GameObjects.
 - **[`manage_graphics`](./core/manage_graphics.md)** — Manage rendering graphics: volumes, post-processing, light baking, rendering stats, pipeline settings, and URP renderer features.
 - **[`manage_material`](./core/manage_material.md)** — Manages Unity materials (set properties, colors, shaders, etc).
@@ -75,10 +76,12 @@ ScriptableObject management
 - **[`execute_code`](./scripting_ext/execute_code.md)** — Execute arbitrary C# code inside the Unity Editor.
 - **[`manage_scriptable_object`](./scripting_ext/manage_scriptable_object.md)** — Creates and modifies ScriptableObject assets using Unity SerializedObject property paths.
 
-## `testing` &nbsp; (2 tools)
+## `testing` &nbsp; (4 tools)
 Test runner & async test jobs
 - **[`get_test_job`](./testing/get_test_job.md)** — Polls an async Unity test job by job_id.
+- **[`manage_playmode_test`](./testing/manage_playmode_test.md)** — Run cancellable Play Mode waits and deterministic action sequences. wait/run_sequence return a job_id and are polled through status.
 - **[`run_tests`](./testing/run_tests.md)** — Starts a Unity test run asynchronously and returns a job_id immediately.
+- **[`simulate_input`](./testing/simulate_input.md)** — Inject deterministic input while the Unity Editor is in Play Mode.
 
 ## `ui` &nbsp; (1 tool)
 UI Toolkit (UXML, USS, UIDocument)

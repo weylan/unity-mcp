@@ -276,6 +276,7 @@ def register_commands():
         ("cli.commands.docs", "docs"),
         ("cli.commands.physics", "physics"),
         ("cli.commands.profiler", "profiler"),
+        ("cli.commands.playmode", "playmode"),
     ]
 
     for module_name, command_name in optional_commands:

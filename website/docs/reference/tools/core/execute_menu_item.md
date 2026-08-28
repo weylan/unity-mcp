@@ -19,6 +19,7 @@ Execute a Unity menu item by path.
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
 | `menu_path` | `str \| None` | — | Menu path for 'execute' or 'exists' (e.g., 'File/Save Project') |
+| `editor_lock_token` | `str \| None` | — | Token returned by manage_editor_lock acquire for multi-operation editor locks |
 
 ## Returns
 

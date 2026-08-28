@@ -167,6 +167,14 @@ namespace MCPForUnity.Editor.Services
                     return GetManagePackagesRisk(action);
                 case "manage_graphics":
                     return GetManageGraphicsRisk(action);
+                case "simulate_input":
+                    return EqualsAny(action, "capabilities", "release_all")
+                        ? null
+                        : $"simulate_input action={action} changes the running game's input state";
+                case "manage_playmode_test":
+                    return EqualsAny(action, "status", "cancel")
+                        ? null
+                        : $"manage_playmode_test action={action} controls the shared running game";
                 case "manage_editor_lock":
                     return null;
                 default:

@@ -24,6 +24,7 @@ Execute arbitrary C# code inside the Unity Editor. The code runs as a method bod
 | `index` | `int \| None` | — | History entry index to replay (for 'replay' action). |
 | `limit` | `int` | — | Number of history entries to return (for 'get_history' action, 1-50). Default: 10. |
 | `compiler` | `Literal['auto', 'roslyn', 'codedom']` | — | Compiler backend for 'execute' action. 'auto' uses Roslyn if Microsoft.CodeAnalysis is installed, else falls back to CodeDom. 'roslyn' forces Roslyn (C# 12+). 'codedom' forces legacy CSharpCodeProvider (C# 6). Default: auto. |
+| `args` | `list[Any] \| None` | — | Optional arguments passed to the dynamic Execute(string[] __mcpArgs) wrapper. |
 
 ## Returns
 

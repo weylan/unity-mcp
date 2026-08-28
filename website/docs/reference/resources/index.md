@@ -156,6 +156,34 @@ Provides a list of all menu items.
 URI: mcpforunity://menu-items
 
 
+## `playmode_state`
+
+**URI:** `mcpforunity://playmode/state`
+
+Compact Play Mode testing snapshot with scene, frame timing, camera, player, Animator, and UI summary. Unity must already be in Play Mode.
+
+URI: mcpforunity://playmode/state
+
+**Parameters:**
+
+- `include_ui` (`bool`, optional) — Include a compact UI summary in the snapshot.
+- `ui_limit` (`int`, optional) — Maximum UI items in the compact summary (0-100).
+- `player` (`str | None`, optional) — Optional player GameObject name, path, or instance ID. Defaults to the Player tag.
+
+## `playmode_ui`
+
+**URI:** `mcpforunity://playmode/ui`
+
+Paginated visible Play Mode UI text and interactable elements. Supports uGUI, TextMeshPro, and UI Toolkit when available.
+
+URI: mcpforunity://playmode/ui
+
+**Parameters:**
+
+- `page_size` (`int`, optional) — Number of UI items to return (1-100).
+- `cursor` (`int`, optional) — Zero-based pagination offset.
+- `framework` (`Literal['all', 'ugui', 'uitoolkit']`, optional) — UI framework filter.
+
 ## `prefab_api`
 
 **URI:** `mcpforunity://prefab-api`
