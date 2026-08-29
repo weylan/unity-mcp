@@ -18,12 +18,12 @@ def _normalize_response(response: dict[str, Any] | Any) -> MCPResponse:
 
 
 @mcp_for_unity_resource(
-    uri="mcpforunity://playmode/state",
+    uri="mcpforunity://playmode/state{?include_ui,ui_limit,player}",
     name="playmode_state",
     description=(
         "Compact Play Mode testing snapshot with scene, frame timing, camera, player, "
         "Animator, and UI summary. Unity must already be in Play Mode.\n\n"
-        "URI: mcpforunity://playmode/state"
+        "URI: mcpforunity://playmode/state{?include_ui,ui_limit,player}"
     ),
 )
 async def get_playmode_state(
@@ -60,12 +60,12 @@ async def get_playmode_state(
 
 
 @mcp_for_unity_resource(
-    uri="mcpforunity://playmode/ui",
+    uri="mcpforunity://playmode/ui{?page_size,cursor,framework}",
     name="playmode_ui",
     description=(
         "Paginated visible Play Mode UI text and interactable elements. Supports "
         "uGUI, TextMeshPro, and UI Toolkit when available.\n\n"
-        "URI: mcpforunity://playmode/ui"
+        "URI: mcpforunity://playmode/ui{?page_size,cursor,framework}"
     ),
 )
 async def get_playmode_ui(
