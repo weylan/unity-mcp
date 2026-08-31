@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -71,6 +74,36 @@ async def test_playmode_ui_resource_forwards_pagination(captured_unity):
         "pageSize": 25,
         "cursor": 50,
         "framework": "ugui",
+    }
+
+
+def test_playmode_resources_register_with_fastmcp():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import asyncio, json; "
+                "from fastmcp import FastMCP; "
+                "from services.resources import register_all_resources; "
+                "mcp = FastMCP('playmode-resource-registration'); "
+                "register_all_resources(mcp, project_scoped_tools=True); "
+                "templates = asyncio.run(mcp.list_resource_templates()); "
+                "print(json.dumps({template.name: str(template.uri_template) "
+                "for template in templates if template.name.startswith('playmode_')}))"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {
+        "playmode_state": "mcpforunity://playmode/state{?include_ui,ui_limit,player}",
+        "playmode_ui": "mcpforunity://playmode/ui{?page_size,cursor,framework}",
     }
 
 

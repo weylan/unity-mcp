@@ -71,6 +71,8 @@ MCP tools 经 WebSocket 调 Unity：`send_with_unity_instance`。CLI 经 HTTP �
 - Python MCP tool、Python CLI command、C# Editor tool 按领域保持对称，但不要强行抽象成一套生成逻辑。
 - 工具保持小而专注。不要为了方便给已有 tool 增加大量参数。
 - 读状态优先用 Resource；会修改 Unity 状态的能力才做 Tool。
+- 参数化 FastMCP Resource URI 必须使用 RFC6570 query template（例如 `mcpforunity://playmode/state{?include_ui,ui_limit,player}`），不要拼成普通 query 占位串。
+- 新增或修改 Resource 时，必须用真实 `register_all_resources` 注册到 FastMCP，并通过 `list_resource_templates()` 精确断言最终 URI template；只测装饰器或直接调用函数不能证明资源已被框架接受。Play Mode 资源的现成入口是 `Server/tests/test_playmode_testing.py::test_playmode_resources_register_with_fastmcp`。
 - 可能返回大量数据的接口必须分页，使用 `page_size` 和 `cursor`，有更多数据时返回 `next_cursor`。
 - 新功能和非紧急 bugfix 使用 TDD：先加能失败的测试，再实现，再跑目标测试。
 - 完成 Feature/Bugfix/Refactor 后执行 `/simplify` 评审；Hotfix 或流程优化可跳过 TDD，但仍要做对应验证。
