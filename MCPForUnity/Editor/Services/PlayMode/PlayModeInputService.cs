@@ -67,6 +67,17 @@ namespace MCPForUnity.Editor.Services.PlayMode
     [InitializeOnLoad]
     internal static class PlayModeInputService
     {
+        private static readonly string[] PointerHandlerNames =
+        {
+            "IPointerClickHandler",
+            "IPointerDownHandler",
+            "IPointerUpHandler",
+            "IBeginDragHandler",
+            "IDragHandler",
+            "IEndDragHandler",
+            "IDropHandler",
+        };
+        private static readonly Dictionary<string, Type> HandlerTypes = new(StringComparer.Ordinal);
         private static readonly Type EventSystemType = FindType("UnityEngine.EventSystems.EventSystem");
         private static readonly Type PointerEventDataType = FindType("UnityEngine.EventSystems.PointerEventData");
 
@@ -88,6 +99,8 @@ namespace MCPForUnity.Editor.Services.PlayMode
                 {
                     available = EventSystemType != null && PointerEventDataType != null,
                     actions = new[] { "ui_click", "ui_drag" },
+                    click_hit_tests = new[] { "strict", "direct" },
+                    default_target_hit_test = "strict",
                 },
                 input_system = new
                 {
@@ -97,6 +110,15 @@ namespace MCPForUnity.Editor.Services.PlayMode
                 },
                 coordinate_origin = "top_left",
             };
+        }
+
+        internal static string[] GetPointerHandlerNames(Component component)
+        {
+            if (component == null) return Array.Empty<string>();
+            Type componentType = component.GetType();
+            return PointerHandlerNames
+                .Where(name => GetHandlerType(name)?.IsAssignableFrom(componentType) == true)
+                .ToArray();
         }
 
         internal static PlayModeInputResult Execute(JObject parameters, bool allowDuringJob)
@@ -148,9 +170,12 @@ namespace MCPForUnity.Editor.Services.PlayMode
             JToken sourceToken = action == "ui_drag"
                 ? parameters["fromTarget"] ?? parameters["from_target"] ?? parameters["target"]
                 : parameters["target"];
+            bool hasExplicitTarget = sourceToken != null;
             GameObject target = ResolveTarget(sourceToken, eventSystem, parameters["position"] as JArray);
             if (target == null)
                 return PlayModeInputResult.Fail("ui_target_not_found", "Could not resolve the UI target.");
+            if (!target.activeInHierarchy)
+                return PlayModeInputResult.Fail("ui_target_inactive", $"'{target.name}' is not active in the hierarchy.");
 
             Vector2 startPosition = ResolvePosition(parameters["position"] as JArray, target);
             object pointerData = CreatePointerEventData(eventSystem, startPosition);
@@ -159,17 +184,72 @@ namespace MCPForUnity.Editor.Services.PlayMode
 
             if (action == "ui_click")
             {
+                string hitTest = parameters["hitTest"]?.ToString()?.Trim().ToLowerInvariant()
+                    ?? parameters["hit_test"]?.ToString()?.Trim().ToLowerInvariant()
+                    ?? (hasExplicitTarget ? "strict" : "direct");
+                if (hitTest is not "strict" and not "direct")
+                    return PlayModeInputResult.Fail(
+                        "invalid_hit_test",
+                        "hitTest must be 'strict' or 'direct'.");
+
+                GameObject dispatchStart = target;
+                GameObject actualTopHit = null;
+                object actualTopRaycast = null;
+                GameObject clickHandler = FindHandlerOwner(target, "IPointerClickHandler");
+                if (hitTest == "strict")
+                {
+                    actualTopHit = Raycast(eventSystem, pointerData, out actualTopRaycast);
+                    if (actualTopHit == null)
+                    {
+                        return PlayModeInputResult.Fail(
+                            "ui_target_not_hittable",
+                            $"'{target.name}' is not under an EventSystem raycast hit.",
+                            new { expectedTarget = BuildIdentity(target), actualTopHit = (object)null });
+                    }
+
+                    clickHandler = FindHandlerOwner(actualTopHit, "IPointerClickHandler");
+                    if ((hasExplicitTarget && clickHandler != target)
+                        || HasConflictingHandler(actualTopHit, clickHandler, "IPointerDownHandler")
+                        || HasConflictingHandler(actualTopHit, clickHandler, "IPointerUpHandler"))
+                    {
+                        return PlayModeInputResult.Fail(
+                            "blocked_by_overlay",
+                            "The expected target does not own the top EventSystem hit.",
+                            new
+                            {
+                                expectedTarget = BuildIdentity(target),
+                                actualTopHit = BuildIdentity(actualTopHit),
+                                handlerTarget = BuildIdentity(clickHandler),
+                            });
+                    }
+                    dispatchStart = actualTopHit;
+                    SetPointerProperty(pointerData, "pointerCurrentRaycast", actualTopRaycast);
+                    SetPointerProperty(pointerData, "pointerPressRaycast", actualTopRaycast);
+                    SetPointerProperty(pointerData, "pointerEnter", actualTopHit);
+                }
+
+                if (clickHandler == null)
+                    return PlayModeInputResult.Fail("ui_handler_missing", $"'{target.name}' has no pointer click handler.");
+                if (!IsInteractable(clickHandler))
+                    return PlayModeInputResult.Fail(
+                        "ui_target_not_interactable",
+                        $"'{clickHandler.name}' is not interactable.");
+
+                PrepareClickPointerData(pointerData, startPosition, clickHandler);
                 var invoked = new List<string>();
-                invoked.AddRange(DispatchHierarchy(target, "IPointerDownHandler", "OnPointerDown", pointerData));
-                invoked.AddRange(DispatchHierarchy(target, "IPointerUpHandler", "OnPointerUp", pointerData));
-                invoked.AddRange(DispatchHierarchy(target, "IPointerClickHandler", "OnPointerClick", pointerData));
+                invoked.AddRange(DispatchHierarchy(dispatchStart, "IPointerDownHandler", "OnPointerDown", pointerData));
+                invoked.AddRange(DispatchHierarchy(dispatchStart, "IPointerUpHandler", "OnPointerUp", pointerData));
+                invoked.AddRange(DispatchHierarchy(dispatchStart, "IPointerClickHandler", "OnPointerClick", pointerData));
                 if (invoked.Count == 0)
                     return PlayModeInputResult.Fail("ui_handler_missing", $"'{target.name}' has no pointer click handler.");
                 return PlayModeInputResult.Ok("UI click dispatched.", new
                 {
                     backend = "event_system",
+                    hitTest,
                     target = PlayModeUiScanner.GetTransformPath(target.transform),
                     instanceID = target.GetInstanceIDCompat(),
+                    actualTopHit = BuildIdentity(actualTopHit),
+                    handlerTarget = BuildIdentity(clickHandler),
                     position = new[] { startPosition.x, startPosition.y },
                     handlers = invoked.Distinct().ToArray(),
                 });
@@ -217,12 +297,14 @@ namespace MCPForUnity.Editor.Services.PlayMode
                 GameObject direct = PlayModeTargetResolver.Resolve(targetToken);
                 if (direct != null) return direct;
             }
-            return position != null ? Raycast(eventSystem, NormalizedToScreen(position)) : null;
+            if (position == null) return null;
+            object pointerData = CreatePointerEventData(eventSystem, NormalizedToScreen(position));
+            return Raycast(eventSystem, pointerData, out _);
         }
 
-        private static GameObject Raycast(object eventSystem, Vector2 position)
+        private static GameObject Raycast(object eventSystem, object pointerData, out object topResult)
         {
-            object pointerData = CreatePointerEventData(eventSystem, position);
+            topResult = null;
             Type raycastResultType = FindType("UnityEngine.EventSystems.RaycastResult");
             if (pointerData == null || raycastResultType == null) return null;
 
@@ -236,8 +318,9 @@ namespace MCPForUnity.Editor.Services.PlayMode
                 null);
             raycastAll?.Invoke(eventSystem, new object[] { pointerData, results });
             if (results == null || results.Count == 0) return null;
-            return raycastResultType.GetProperty("gameObject")?.GetValue(results[0]) as GameObject
-                ?? raycastResultType.GetField("gameObject")?.GetValue(results[0]) as GameObject;
+            topResult = results[0];
+            return raycastResultType.GetProperty("gameObject")?.GetValue(topResult) as GameObject
+                ?? raycastResultType.GetField("gameObject")?.GetValue(topResult) as GameObject;
         }
 
         private static object CreatePointerEventData(object eventSystem, Vector2 position)
@@ -265,13 +348,94 @@ namespace MCPForUnity.Editor.Services.PlayMode
             catch { /* Optional metadata differs across uGUI versions. */ }
         }
 
+        private static void PrepareClickPointerData(object data, Vector2 position, GameObject handler)
+        {
+            SetPointerProperty(data, "pressPosition", position);
+            SetPointerProperty(data, "pointerPress", handler);
+            SetPointerProperty(data, "eligibleForClick", true);
+            SetPointerProperty(data, "clickCount", 1);
+            try
+            {
+                PropertyInfo button = PointerEventDataType.GetProperty("button");
+                if (button?.PropertyType.IsEnum == true)
+                    button.SetValue(data, Enum.ToObject(button.PropertyType, 0));
+            }
+            catch
+            {
+                // Older uGUI versions may expose button metadata differently.
+            }
+        }
+
+        private static GameObject FindHandlerOwner(GameObject start, string interfaceName)
+        {
+            Type handlerType = GetHandlerType(interfaceName);
+            if (start == null || handlerType == null) return null;
+            for (Transform current = start.transform; current != null; current = current.parent)
+            {
+                if (current.GetComponents<Component>()
+                    .Any(component => component != null && handlerType.IsAssignableFrom(component.GetType())))
+                    return current.gameObject;
+            }
+            return null;
+        }
+
+        private static bool HasConflictingHandler(
+            GameObject topHit,
+            GameObject clickHandler,
+            string interfaceName)
+        {
+            GameObject handler = FindHandlerOwner(topHit, interfaceName);
+            return handler != null && handler != clickHandler;
+        }
+
+        private static bool IsInteractable(GameObject target)
+        {
+            Type selectableType = FindType("UnityEngine.UI.Selectable");
+            if (target == null || selectableType == null) return true;
+            Component selectable = target.GetComponents<Component>()
+                .FirstOrDefault(component => component != null && selectableType.IsAssignableFrom(component.GetType()));
+            if (selectable == null) return true;
+            try
+            {
+                MethodInfo method = selectable.GetType().GetMethod(
+                    "IsInteractable",
+                    BindingFlags.Public | BindingFlags.Instance);
+                return method?.Invoke(selectable, null) is not bool value || value;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+
+        private static object BuildIdentity(GameObject gameObject)
+        {
+            if (gameObject == null) return null;
+            return new
+            {
+                name = gameObject.name,
+                path = PlayModeUiScanner.GetTransformPath(gameObject.transform),
+                instanceID = gameObject.GetInstanceIDCompat(),
+            };
+        }
+
+        private static Type GetHandlerType(string interfaceName)
+        {
+            if (!HandlerTypes.TryGetValue(interfaceName, out Type handlerType))
+            {
+                handlerType = FindType("UnityEngine.EventSystems." + interfaceName);
+                HandlerTypes[interfaceName] = handlerType;
+            }
+            return handlerType;
+        }
+
         private static IEnumerable<string> DispatchHierarchy(
             GameObject start,
             string interfaceName,
             string methodName,
             object eventData)
         {
-            Type handlerType = FindType("UnityEngine.EventSystems." + interfaceName);
+            Type handlerType = GetHandlerType(interfaceName);
             if (handlerType == null) yield break;
 
             for (Transform current = start.transform; current != null; current = current.parent)
@@ -282,7 +446,7 @@ namespace MCPForUnity.Editor.Services.PlayMode
                 if (handlers.Length == 0) continue;
                 foreach (Component handler in handlers)
                 {
-                    MethodInfo method = handler.GetType().GetMethod(methodName, BindingFlags.Public | BindingFlags.Instance);
+                    MethodInfo method = ResolveHandlerMethod(handler.GetType(), handlerType, methodName);
                     if (method == null) continue;
                     method.Invoke(handler, new[] { eventData });
                     yield return handler.GetType().Name + "." + methodName;
@@ -291,11 +455,36 @@ namespace MCPForUnity.Editor.Services.PlayMode
             }
         }
 
+        private static MethodInfo ResolveHandlerMethod(
+            Type componentType,
+            Type handlerType,
+            string methodName)
+        {
+            MethodInfo interfaceMethod = handlerType.GetMethod(methodName);
+            if (interfaceMethod == null) return null;
+            try
+            {
+                InterfaceMapping mapping = componentType.GetInterfaceMap(handlerType);
+                int index = Array.IndexOf(mapping.InterfaceMethods, interfaceMethod);
+                return index >= 0 ? mapping.TargetMethods[index] : null;
+            }
+            catch
+            {
+                return componentType.GetMethod(methodName, BindingFlags.Public | BindingFlags.Instance);
+            }
+        }
+
         private static Vector2 ResolvePosition(JArray normalized, GameObject target)
         {
             if (normalized is { Count: >= 2 }) return NormalizedToScreen(normalized);
             if (target.transform is RectTransform rect)
-                return RectTransformUtility.WorldToScreenPoint(Camera.main, rect.TransformPoint(rect.rect.center));
+            {
+                Canvas canvas = rect.GetComponentInParent<Canvas>();
+                Camera camera = canvas != null && canvas.renderMode == RenderMode.ScreenSpaceOverlay
+                    ? null
+                    : canvas != null && canvas.worldCamera != null ? canvas.worldCamera : Camera.main;
+                return RectTransformUtility.WorldToScreenPoint(camera, rect.TransformPoint(rect.rect.center));
+            }
             return Camera.main != null
                 ? (Vector2)Camera.main.WorldToScreenPoint(target.transform.position)
                 : new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);

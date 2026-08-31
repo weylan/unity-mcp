@@ -64,7 +64,7 @@ async def get_playmode_state(
     name="playmode_ui",
     description=(
         "Paginated visible Play Mode UI text and interactable elements. Supports "
-        "uGUI, TextMeshPro, and UI Toolkit when available.\n\n"
+        "uGUI Selectables, custom pointer handlers, TextMeshPro, and UI Toolkit when available.\n\n"
         "URI: mcpforunity://playmode/ui"
     ),
 )

@@ -17,7 +17,10 @@ namespace MCPForUnity.Editor.Services.PlayMode
         public string Path { get; set; }
         public int? InstanceId { get; set; }
         public string Text { get; set; }
+        public bool Active { get; set; }
         public bool Interactable { get; set; }
+        public string InteractionSource { get; set; }
+        public string[] PointerHandlers { get; set; }
         public object Value { get; set; }
         public float[] Rect { get; set; }
         public float[] Center { get; set; }
@@ -32,7 +35,10 @@ namespace MCPForUnity.Editor.Services.PlayMode
                 path = Path,
                 instanceID = InstanceId,
                 text = Text,
+                active = Active,
                 interactable = Interactable,
+                interactionSource = InteractionSource,
+                pointerHandlers = PointerHandlers,
                 value = Value,
                 normalizedRect = Rect,
                 center = Center,
@@ -99,7 +105,33 @@ namespace MCPForUnity.Editor.Services.PlayMode
                     bool interactable = ReadBoolProperty(component, "interactable", true);
                     string text = FindChildText(component.gameObject);
                     object value = ReadControlValue(component);
-                    var item = BuildUGuiItem(component, text, interactable, value);
+                    var item = BuildUGuiItem(
+                        component,
+                        text,
+                        interactable,
+                        value,
+                        "selectable",
+                        PlayModeInputService.GetPointerHandlerNames(component));
+                    byKey[BuildKey(item)] = item;
+                }
+            }
+
+            foreach (RectTransform rectTransform in UnityFindObjectsCompat.FindAll<RectTransform>())
+            {
+                foreach (MonoBehaviour component in rectTransform.GetComponents<MonoBehaviour>())
+                {
+                    if (!IsVisible(component)) continue;
+                    string[] pointerHandlers = PlayModeInputService.GetPointerHandlerNames(component);
+                    if (!pointerHandlers.Contains("IPointerClickHandler")) continue;
+                    if (selectableType != null && component.GetComponent(selectableType) != null) continue;
+                    string text = FindChildText(component.gameObject);
+                    var item = BuildUGuiItem(
+                        component,
+                        text,
+                        true,
+                        null,
+                        "pointer_handler",
+                        pointerHandlers);
                     byKey[BuildKey(item)] = item;
                 }
             }
@@ -165,7 +197,10 @@ namespace MCPForUnity.Editor.Services.PlayMode
                         Path = path,
                         InstanceId = document.gameObject.GetInstanceIDCompat(),
                         Text = text,
+                        Active = document.gameObject.activeInHierarchy,
                         Interactable = interactable,
+                        InteractionSource = interactable ? "uitoolkit" : null,
+                        PointerHandlers = Array.Empty<string>(),
                         Value = value,
                         Rect = new[] { xMin, yMin, xMax, yMax },
                         Center = new[] { (xMin + xMax) * 0.5f, (yMin + yMax) * 0.5f },
@@ -181,7 +216,9 @@ namespace MCPForUnity.Editor.Services.PlayMode
             Component component,
             string text,
             bool interactable,
-            object value)
+            object value,
+            string interactionSource = null,
+            string[] pointerHandlers = null)
         {
             GetNormalizedRect(component.transform as RectTransform, out float[] rect, out float[] center);
             return new PlayModeUiItem
@@ -192,7 +229,10 @@ namespace MCPForUnity.Editor.Services.PlayMode
                 Path = GetTransformPath(component.transform),
                 InstanceId = component.gameObject.GetInstanceIDCompat(),
                 Text = text,
+                Active = component.gameObject.activeInHierarchy,
                 Interactable = interactable,
+                InteractionSource = interactionSource,
+                PointerHandlers = pointerHandlers ?? Array.Empty<string>(),
                 Value = value,
                 Rect = rect,
                 Center = center,

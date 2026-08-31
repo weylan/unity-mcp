@@ -174,7 +174,7 @@ URI: mcpforunity://playmode/state
 
 **URI:** `mcpforunity://playmode/ui`
 
-Paginated visible Play Mode UI text and interactable elements. Supports uGUI, TextMeshPro, and UI Toolkit when available.
+Paginated visible Play Mode UI text and interactable elements. Supports uGUI Selectables, custom pointer handlers, TextMeshPro, and UI Toolkit when available.
 
 URI: mcpforunity://playmode/ui
 

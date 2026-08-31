@@ -12,7 +12,7 @@ description: "Inject deterministic input while the Unity Editor is in Play Mode.
 
 ## Description
 
-Inject deterministic input while the Unity Editor is in Play Mode. Use target-based ui_click/ui_drag when possible. Keyboard, mouse, touch, and gamepad injection require the optional Unity Input System backend.
+Inject deterministic input while the Unity Editor is in Play Mode. Target-based ui_click uses strict EventSystem hit testing by default. Use target-based ui_click/ui_drag when possible. Keyboard, mouse, touch, and gamepad injection require the optional Unity Input System backend.
 
 ## Parameters
 
@@ -32,6 +32,7 @@ Inject deterministic input while the Unity Editor is in Play Mode. Use target-ba
 | `delta` | `list[float] \| None` | — | Mouse delta [dx,dy] in pixels. |
 | `hold_frames` | `int \| None` | — | Frames between press and release for tap. |
 | `backend` | `Literal['auto', 'event_system', 'input_system'] \| None` | — | Input backend. |
+| `hit_test` | `Literal['strict', 'direct'] \| None` | — | UI click hit-test policy. strict requires the expected target to own the top EventSystem hit. |
 | `editor_lock_token` | `str \| None` | — | Token returned by manage_editor_lock acquire for shared Editor mutation. |
 
 ## Returns
@@ -44,7 +45,12 @@ A `dict` containing the Unity response. The exact shape depends on the action.
 Prefer target-based UI input when the target is known:
 
 ```text
-simulate_input(action="ui_click", target="Canvas/StartButton", backend="event_system")
+simulate_input(
+    action="ui_click",
+    target="Canvas/StartButton",
+    backend="event_system",
+    hit_test="strict",
+)
 ```
 
 Input System taps span at least one PlayerLoop frame so gameplay code can observe them:
@@ -55,5 +61,5 @@ simulate_input(action="gamepad", control="buttonSouth", phase="tap")
 simulate_input(action="release_all")
 ```
 
-Coordinates are normalized `[x, y]` values with a top-left origin, matching screenshots and the `center` values from `mcpforunity://playmode/ui`.
+Target-based clicks default to strict hit testing: the expected target must own the top EventSystem hit. Coordinates are normalized `[x, y]` values with a top-left origin, matching screenshots and the `center` values from `mcpforunity://playmode/ui`.
 <!-- examples:end -->
