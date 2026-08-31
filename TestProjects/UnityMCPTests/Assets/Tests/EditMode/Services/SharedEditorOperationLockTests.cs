@@ -87,6 +87,23 @@ namespace MCPForUnityTests.Editor.Services
             Assert.IsTrue(SharedEditorOperationLock.IsHighRiskTool("run_tests", null));
         }
 
+        [TestCase("simulate_input", "ui_click", true)]
+        [TestCase("simulate_input", "capabilities", false)]
+        [TestCase("simulate_input", "release_all", false)]
+        [TestCase("manage_playmode_test", "wait", true)]
+        [TestCase("manage_playmode_test", "sequence", true)]
+        [TestCase("manage_playmode_test", "status", false)]
+        [TestCase("manage_playmode_test", "cancel", false)]
+        public void PlayModeTestingTools_MatchGuardedActionRisk(
+            string toolName,
+            string action,
+            bool expectedHighRisk)
+        {
+            Assert.AreEqual(
+                expectedHighRisk,
+                SharedEditorOperationLock.IsHighRiskTool(toolName, action));
+        }
+
         [Test]
         public void AutomaticLease_DoesNotWriteAnEmptyPersistenceProjection()
         {
