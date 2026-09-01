@@ -4,11 +4,9 @@
 
 ## In Progress
 
-- [ ] Existing `make release` generation/commit of `MCPForUnity/package.json`, followed by consumer upgrade and shared-Editor background observation
-
 ## Pending
 
-- [ ] Fresh consumer pin/guard/runtime projection and live background poll after release
+- [ ] Fresh consumer pin/guard/runtime projection and live background poll are tracked by `/Users/weylan/Projects/unity/plans/UnityMCP后台测试恢复修复/`
 
 ## Blocked
 
@@ -20,3 +18,4 @@
 - [x] PID/path/peer transport identity — WebSocket, stdio and server registry/model files
 - [x] Tool documentation — `website/docs/reference/tools/`
 - [x] Exact regression gates — Python `1438 passed, 2 skipped`; Node exact `4/4`; isolated Unity `2022.3.62f3c1` C# exact `8/8`
+- [x] Existing release flow generated/pushed `gameempire-mcp-v20260902.1` at `92139f8509bd4cd6ec24953d250c2e17c4a3ec94`

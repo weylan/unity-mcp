@@ -1,6 +1,6 @@
 # Unity MCP Background Test Recovery Plan
 
-> Created: 2026-09-01 | Status: ready | Author: codex
+> 创建: 2026-09-01 | 状态: done | 作者: codex
 > Machine contract: `./plan.contract.json`
 
 ## Goal
@@ -55,6 +55,8 @@ No non-done plan overlaps the declared files. This succeeds the completed `test-
 On 2026-09-02 the RED contract matched all `12/12` exact owners, the Node wrapper executed all `4/4` mapped pytest nodes, the related Python files passed `196/196`, and the full Python suite passed `1438` with `2` skips and no failures. The isolated Unity `2022.3.62f3c1` run compiled the changed C# and reported exactly `8/8` passed. The shared Unity Editor was not used for those gates.
 
 The post-implementation three-lane review was applied only where it affected the normal background-test path: V3 restore now rejects contradictory status/phase/current/owner snapshots while retaining a matching physical owner for a logical terminal job; remote-hosted nudge fails before Unity or OS lookup; and nudge execution/restore failures are returned as failures. General upgrade rollback, journal carry-forward expansion, watchdog throttling and PID-reuse hardening remain outside this fix.
+
+The existing release flow generated commit `92139f8509bd4cd6ec24953d250c2e17c4a3ec94` and published immutable tag `gameempire-mcp-v20260902.1`. Remote `beta`, that immutable tag and `gameempire-mcp-latest` were read back at the same OID; the generated Server source names the same immutable tag.
 
 ## Related
 

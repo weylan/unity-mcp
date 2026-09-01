@@ -28,6 +28,8 @@ The 2026-09-02 isolated run reported `Passed total=8 passed=8 failed=0 skipped=0
 
 Review found that the existing private release flow generates a source-tag update in `MCPForUnity/package.json` and commits it. Revision 4 includes that output path, while `Makefile`, `Tools/gameempire_merge_latest.js` and `Tools/tests/test_gameempire_merge_latest.js` remain read-only context. No production release code changes are needed: after all tests pass and revision 4 receives fresh authorization, only the existing `make release` command may generate/commit the package change.
 
+That boundary completed at immutable tag `gameempire-mcp-v20260902.1`, release commit `92139f8509bd4cd6ec24953d250c2e17c4a3ec94`. The remote branch and both release refs were independently read back at the same OID. The temporary DNS workaround was command-scoped (`http.curloptResolve` plus SSH `HostKeyAlias=github.com`), retained normal TLS/host-key validation, and wrote no system or repository configuration.
+
 ## Rejected
 
 - Keep auto-focus and improve TCC prompts: read-only polling would retain an OS side effect.
