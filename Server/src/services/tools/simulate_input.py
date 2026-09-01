@@ -28,6 +28,7 @@ ALL_ACTIONS: list[str] = list(get_args(InputAction))
     group="testing",
     description=(
         "Inject deterministic input while the Unity Editor is in Play Mode. "
+        "Target-based ui_click uses strict EventSystem hit testing by default. "
         "Use target-based ui_click/ui_drag when possible. Keyboard, mouse, touch, "
         "and gamepad injection require the optional Unity Input System backend."
     ),
@@ -52,6 +53,10 @@ async def simulate_input(
     delta: Annotated[list[float] | None, "Mouse delta [dx,dy] in pixels."] = None,
     hold_frames: Annotated[int | None, "Frames between press and release for tap."] = None,
     backend: Annotated[Literal["auto", "event_system", "input_system"] | None, "Input backend."] = None,
+    hit_test: Annotated[
+        Literal["strict", "direct"] | None,
+        "UI click hit-test policy. strict requires the expected target to own the top EventSystem hit.",
+    ] = None,
     editor_lock_token: Annotated[
         str | None,
         "Token returned by manage_editor_lock acquire for shared Editor mutation.",
@@ -67,6 +72,16 @@ async def simulate_input(
         return {
             "success": False,
             "message": "hold_frames must be between 1 and 120.",
+        }
+    if hit_test is not None and hit_test not in {"strict", "direct"}:
+        return {
+            "success": False,
+            "message": "hit_test must be 'strict' or 'direct'.",
+        }
+    if hit_test is not None and action_normalized != "ui_click":
+        return {
+            "success": False,
+            "message": "hit_test is only valid for ui_click.",
         }
 
     params: dict[str, Any] = {"action": action_normalized}
@@ -84,6 +99,7 @@ async def simulate_input(
         "delta": delta,
         "holdFrames": hold_frames,
         "backend": backend,
+        "hitTest": hit_test,
         "editor_lock_token": editor_lock_token,
     }
     params.update({key: val for key, val in values.items() if val is not None})

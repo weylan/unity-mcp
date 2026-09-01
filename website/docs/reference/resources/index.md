@@ -158,11 +158,11 @@ URI: mcpforunity://menu-items
 
 ## `playmode_state`
 
-**URI:** `mcpforunity://playmode/state`
+**URI:** `mcpforunity://playmode/state{?include_ui,ui_limit,player}`
 
 Compact Play Mode testing snapshot with scene, frame timing, camera, player, Animator, and UI summary. Unity must already be in Play Mode.
 
-URI: mcpforunity://playmode/state
+URI: mcpforunity://playmode/state{?include_ui,ui_limit,player}
 
 **Parameters:**
 
@@ -172,11 +172,11 @@ URI: mcpforunity://playmode/state
 
 ## `playmode_ui`
 
-**URI:** `mcpforunity://playmode/ui`
+**URI:** `mcpforunity://playmode/ui{?page_size,cursor,framework}`
 
-Paginated visible Play Mode UI text and interactable elements. Supports uGUI, TextMeshPro, and UI Toolkit when available.
+Paginated visible Play Mode UI text and interactable elements. Supports uGUI Selectables, custom pointer handlers, TextMeshPro, and UI Toolkit when available.
 
-URI: mcpforunity://playmode/ui
+URI: mcpforunity://playmode/ui{?page_size,cursor,framework}
 
 **Parameters:**
 

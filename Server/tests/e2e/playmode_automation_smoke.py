@@ -132,7 +132,11 @@ def main() -> int:
     setup_code = f"""
 var eventSystemObject = new GameObject("MCP_PlayMode_EventSystem_{run_id}");
 eventSystemObject.AddComponent<UnityEngine.EventSystems.EventSystem>();
-var canvasObject = new GameObject("{canvas}", typeof(RectTransform), typeof(UnityEngine.Canvas));
+var canvasObject = new GameObject(
+    "{canvas}",
+    typeof(RectTransform),
+    typeof(UnityEngine.Canvas),
+    typeof(UnityEngine.UI.GraphicRaycaster));
 canvasObject.GetComponent<UnityEngine.Canvas>().renderMode = RenderMode.ScreenSpaceOverlay;
 var buttonObject = new GameObject("{button}", typeof(RectTransform));
 buttonObject.transform.SetParent(canvasObject.transform, false);
@@ -140,6 +144,7 @@ var image = buttonObject.AddComponent<UnityEngine.UI.Image>();
 var testButton = buttonObject.AddComponent<UnityEngine.UI.Button>();
 var probeObject = new GameObject("{probe}");
 testButton.onClick.AddListener(() => probeObject.transform.position = new Vector3(5f, 0f, 0f));
+Canvas.ForceUpdateCanvases();
 return probeObject.GetInstanceID();
 """
 
@@ -193,7 +198,12 @@ return probeObject.GetInstanceID();
         runner.step(
             "event_system_click",
             "simulate_input",
-            {"action": "ui_click", "target": f"{canvas}/{button}", "backend": "event_system"},
+            {
+                "action": "ui_click",
+                "target": f"{canvas}/{button}",
+                "backend": "event_system",
+                "hitTest": "strict",
+            },
         )
 
         wait_start = runner.step(
@@ -235,7 +245,12 @@ return probeObject.GetInstanceID();
                 "timeoutSeconds": 8.0,
                 "steps": [
                     {"type": "key", "key": "space", "phase": "tap", "holdFrames": 1},
-                    {"type": "ui_click", "target": f"{canvas}/{button}", "backend": "event_system"},
+                    {
+                        "type": "ui_click",
+                        "target": f"{canvas}/{button}",
+                        "backend": "event_system",
+                        "hitTest": "strict",
+                    },
                     {
                         "type": "wait",
                         "timeout_seconds": 5.0,

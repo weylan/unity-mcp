@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Services.Transport;
+using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Tools;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -345,6 +346,62 @@ namespace MCPForUnityTests.Editor.Services
             }
         }
 
+        [TestCase("simulate_input", "ui_click")]
+        [TestCase("manage_playmode_test", "wait")]
+        public void GuardedPlayModeTools_AcceptOnlyValidExplicitToken(string toolName, string action)
+        {
+            string oldLock = Environment.GetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK");
+            string oldGuard = Environment.GetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_GUARD");
+            Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", "on");
+            Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_GUARD", "block");
+            SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+            MCPServiceLocator.Reset();
+            MCPServiceLocator.Register<IToolDiscoveryService>(new AlwaysEnabledToolDiscovery());
+            TransportCommandDispatcher.SlicingActiveOverrideForTests = () => true;
+            TransportCommandDispatcher.CommandExecutorOverrideForTests = (_, __, ___) =>
+                new SuccessResponse("executed");
+            var acquired = SharedEditorOperationLock.TryAcquire(
+                "dispatcher-test",
+                "guarded-playmode",
+                isExplicit: true);
+            Assert.IsTrue(acquired.Acquired);
+
+            try
+            {
+                JObject valid = Dispatch(toolName, action, acquired.Token);
+                Assert.AreEqual("success", valid.Value<string>("status"), valid.ToString());
+                Assert.IsTrue(valid["result"]?.Value<bool>("success") ?? false, valid.ToString());
+
+                JObject missing = Dispatch(toolName, action, null);
+                Assert.AreEqual("shared_editor_guard_blocked", missing["result"]?.Value<string>("code"), missing.ToString());
+
+                JObject invalid = Dispatch(toolName, action, "wrong-token");
+                Assert.AreEqual(SharedEditorOperationLock.InvalidTokenCode,
+                    invalid["result"]?.Value<string>("code"), invalid.ToString());
+            }
+            finally
+            {
+                TransportCommandDispatcher.CommandExecutorOverrideForTests = null;
+                SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+                MCPServiceLocator.Reset();
+                Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", oldLock);
+                Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_GUARD", oldGuard);
+            }
+        }
+
+        private static JObject Dispatch(string toolName, string action, string token)
+        {
+            var parameters = new JObject { ["action"] = action };
+            if (!string.IsNullOrEmpty(token))
+                parameters["editor_lock_token"] = token;
+
+            var task = TransportCommandDispatcher.ExecuteCommandJsonAsync(
+                CommandJson(toolName, parameters),
+                CancellationToken.None);
+            TransportCommandDispatcher.ProcessQueueForTests();
+            return JObject.Parse(WaitForTask(task));
+        }
+
         private static string CommandJson(string type, JObject parameters)
         {
             return new JObject
@@ -370,6 +427,18 @@ namespace MCPForUnityTests.Editor.Services
         {
             Assert.IsTrue(task.Wait(timeoutMs), "Task did not complete within the timeout.");
             return task.GetAwaiter().GetResult();
+        }
+
+        private sealed class AlwaysEnabledToolDiscovery : IToolDiscoveryService
+        {
+            public List<ToolMetadata> DiscoverAllTools() => new List<ToolMetadata>();
+            public ToolMetadata GetToolMetadata(string toolName) => null;
+            public List<ToolMetadata> GetEnabledTools() => new List<ToolMetadata>();
+            public bool IsToolEnabled(string toolName) => true;
+            public string GetToolStateSource(string toolName) => "test";
+            public bool HasProjectToolOverride(string toolName) => false;
+            public void SetToolEnabled(string toolName, bool enabled) { }
+            public void InvalidateCache() { }
         }
     }
 

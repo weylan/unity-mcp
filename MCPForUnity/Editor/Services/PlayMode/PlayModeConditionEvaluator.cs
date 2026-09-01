@@ -151,6 +151,16 @@ namespace MCPForUnity.Editor.Services.PlayMode
                 .Distinct(StringComparer.Ordinal)
                 .Take(100)
                 .ToArray();
+            string normalized = NormalizeOperator(op);
+            if (normalized is "not_contains" or "not_equals")
+            {
+                string positiveOperator = normalized == "not_contains" ? "contains" : "equals";
+                bool positiveMatch = texts.Any(text =>
+                    Compare(new JValue(text), positiveOperator, expected, tolerance).Matched);
+                var negativeResult = Success(!positiveMatch, new JArray(texts), expected);
+                negativeResult.Description = $"ui_text: no visible text {positiveOperator} expected={expected}";
+                return negativeResult;
+            }
             foreach (string text in texts)
             {
                 PlayModeConditionResult result = Compare(new JValue(text), op, expected, tolerance);

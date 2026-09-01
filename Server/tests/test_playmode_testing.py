@@ -114,6 +114,7 @@ async def test_simulate_input_forwards_ui_click(captured_unity):
         action="ui_click",
         target="Canvas/StartButton",
         backend="event_system",
+        hit_test="strict",
     )
 
     assert response["success"] is True
@@ -123,6 +124,7 @@ async def test_simulate_input_forwards_ui_click(captured_unity):
         "action": "ui_click",
         "target": "Canvas/StartButton",
         "backend": "event_system",
+        "hitTest": "strict",
     }
 
 
@@ -150,6 +152,34 @@ async def test_simulate_input_rejects_unknown_action(captured_unity):
 
     assert response["success"] is False
     assert "Unknown action" in response["message"]
+    assert captured_unity == []
+
+
+@pytest.mark.asyncio
+async def test_simulate_input_rejects_unknown_hit_test(captured_unity):
+    response = await simulate_input(
+        SimpleNamespace(),
+        action="ui_click",
+        target="Canvas/StartButton",
+        hit_test="optimistic",
+    )
+
+    assert response["success"] is False
+    assert "hit_test" in response["message"]
+    assert captured_unity == []
+
+
+@pytest.mark.asyncio
+async def test_simulate_input_rejects_hit_test_for_non_click_action(captured_unity):
+    response = await simulate_input(
+        SimpleNamespace(),
+        action="key",
+        key="space",
+        hit_test="strict",
+    )
+
+    assert response["success"] is False
+    assert "only valid for ui_click" in response["message"]
     assert captured_unity == []
 
 

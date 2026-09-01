@@ -161,6 +161,10 @@ namespace MCPForUnity.Editor.Services
                         "resolve_packages", "add_registry", "remove_registry");
                 case "manage_graphics":
                     return action != null && action.StartsWith("bake_", StringComparison.OrdinalIgnoreCase);
+                case "simulate_input":
+                    return !EqualsAny(action, "capabilities", "release_all");
+                case "manage_playmode_test":
+                    return !EqualsAny(action, "status", "cancel");
                 default:
                     return false;
             }

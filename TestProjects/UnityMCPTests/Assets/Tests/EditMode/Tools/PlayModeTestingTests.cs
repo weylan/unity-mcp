@@ -1,3 +1,6 @@
+using System.Collections.Generic;
+using System.Linq;
+using System.Reflection;
 using MCPForUnity.Editor.Helpers;
 using MCPForUnity.Editor.Resources.PlayMode;
 using MCPForUnity.Editor.Services.PlayMode;
@@ -5,6 +8,8 @@ using MCPForUnity.Editor.Tools.PlayMode;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.EventSystems;
+using UnityEngine.UI;
 
 namespace MCPForUnityTests.Editor.Tools
 {
@@ -127,5 +132,189 @@ namespace MCPForUnityTests.Editor.Tools
             }
         }
 
+        [Test]
+        public void UiScanner_DiscoversPointerClickHandlerWithoutSelectable()
+        {
+            var target = new GameObject(
+                "PointerOnlyTarget",
+                typeof(RectTransform),
+                typeof(PlayModePointerClickProbe));
+            try
+            {
+                PlayModeUiItem item = PlayModeUiScanner.Scan("ugui")
+                    .Single(candidate => candidate.Name == target.name);
+
+                Assert.AreEqual("pointer_handler", item.InteractionSource);
+                CollectionAssert.Contains(item.PointerHandlers, "IPointerClickHandler");
+                Assert.IsTrue(item.Interactable);
+            }
+            finally
+            {
+                Object.DestroyImmediate(target);
+            }
+        }
+
+        [Test]
+        public void UiTextNotContains_RequiresTargetTextToBeAbsentFromAllItems()
+        {
+            var other = new GameObject("AAA_OtherText", typeof(RectTransform), typeof(Text));
+            var target = new GameObject("ZZZ_TargetText", typeof(RectTransform), typeof(Text));
+            other.GetComponent<Text>().text = "Settings";
+            target.GetComponent<Text>().text = "New Game";
+            var condition = new JObject
+            {
+                ["type"] = "ui_text",
+                ["operator"] = "not_contains",
+                ["value"] = "New Game",
+            };
+            try
+            {
+                Assert.IsFalse(PlayModeConditionEvaluator.Evaluate(condition).Matched);
+
+                target.SetActive(false);
+
+                Assert.IsTrue(PlayModeConditionEvaluator.Evaluate(condition).Matched);
+            }
+            finally
+            {
+                Object.DestroyImmediate(other);
+                Object.DestroyImmediate(target);
+            }
+        }
+
+        [Test]
+        public void StrictUiClick_RejectsOverlayAndAcceptsOrdinaryTargetChild()
+        {
+            var eventSystemObject = new GameObject("StrictClickEventSystem", typeof(EventSystem));
+            var eventSystem = eventSystemObject.GetComponent<EventSystem>();
+            var eventSystems = (List<EventSystem>)typeof(EventSystem)
+                .GetField("m_EventSystems", BindingFlags.Static | BindingFlags.NonPublic)
+                ?.GetValue(null);
+            Assert.IsNotNull(eventSystems);
+            eventSystems.Remove(eventSystem);
+            eventSystems.Insert(0, eventSystem);
+            var raycaster = eventSystemObject.AddComponent<PlayModeDeterministicRaycaster>();
+            typeof(BaseRaycaster).GetMethod("OnEnable", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.Invoke(raycaster, null);
+            Assert.AreSame(eventSystem, EventSystem.current);
+            var target = new GameObject(
+                "StrictClickTarget",
+                typeof(RectTransform),
+                typeof(PlayModePointerClickProbe));
+            var child = new GameObject("StrictClickChild", typeof(RectTransform));
+            child.transform.SetParent(target.transform);
+            var nested = new GameObject(
+                "StrictClickNestedHandler",
+                typeof(RectTransform),
+                typeof(PlayModePointerClickProbe));
+            nested.transform.SetParent(target.transform);
+            var overlay = new GameObject(
+                "StrictClickOverlay",
+                typeof(RectTransform),
+                typeof(PlayModePointerClickProbe));
+            var disabled = new GameObject(
+                "StrictClickDisabledButton",
+                typeof(RectTransform),
+                typeof(Image),
+                typeof(Button));
+            disabled.GetComponent<Button>().interactable = false;
+            var targetProbe = target.GetComponent<PlayModePointerClickProbe>();
+            var nestedProbe = nested.GetComponent<PlayModePointerClickProbe>();
+            var overlayProbe = overlay.GetComponent<PlayModePointerClickProbe>();
+            var parameters = new JObject
+            {
+                ["action"] = "ui_click",
+                ["target"] = target.GetInstanceID(),
+                ["backend"] = "event_system",
+                ["hitTest"] = "strict",
+            };
+            try
+            {
+                raycaster.SetHits(overlay, target);
+                PlayModeInputResult blocked = PlayModeInputService.Execute(parameters, allowDuringJob: false);
+
+                Assert.IsFalse(blocked.Success);
+                Assert.AreEqual("blocked_by_overlay", blocked.Code);
+                Assert.AreEqual(0, targetProbe.ClickCount);
+                Assert.AreEqual(0, overlayProbe.ClickCount);
+
+                raycaster.SetHits(child);
+                PlayModeInputResult clicked = PlayModeInputService.Execute(parameters, allowDuringJob: false);
+
+                Assert.IsTrue(clicked.Success, clicked.Message);
+                Assert.AreEqual(1, targetProbe.ClickCount);
+                Assert.AreEqual(0, overlayProbe.ClickCount);
+
+                raycaster.SetHits(nested);
+                PlayModeInputResult nestedBlocked = PlayModeInputService.Execute(parameters, allowDuringJob: false);
+
+                Assert.IsFalse(nestedBlocked.Success);
+                Assert.AreEqual("blocked_by_overlay", nestedBlocked.Code);
+                Assert.AreEqual(1, targetProbe.ClickCount);
+                Assert.AreEqual(0, nestedProbe.ClickCount);
+
+                parameters["target"] = disabled.GetInstanceID();
+                raycaster.SetHits(disabled);
+                PlayModeInputResult notInteractable = PlayModeInputService.Execute(parameters, allowDuringJob: false);
+
+                Assert.IsFalse(notInteractable.Success);
+                Assert.AreEqual("ui_target_not_interactable", notInteractable.Code);
+            }
+            finally
+            {
+                eventSystems.Remove(eventSystem);
+                Object.DestroyImmediate(target);
+                Object.DestroyImmediate(overlay);
+                Object.DestroyImmediate(disabled);
+                Object.DestroyImmediate(eventSystemObject);
+            }
+        }
+
+    }
+
+    public sealed class PlayModePointerClickProbe : MonoBehaviour, IPointerClickHandler
+    {
+        public int ClickCount { get; private set; }
+
+        public void OnPointerClick(PointerEventData eventData)
+        {
+            ClickCount++;
+        }
+    }
+
+    [ExecuteAlways]
+    public sealed class PlayModeDeterministicRaycaster : BaseRaycaster
+    {
+        private readonly List<GameObject> _hits = new();
+
+        public override Camera eventCamera => null;
+        public override int sortOrderPriority => 1000;
+        public override int renderOrderPriority => 1000;
+        public override bool IsActive() => true;
+
+        public void SetHits(params GameObject[] hits)
+        {
+            _hits.Clear();
+            _hits.AddRange(hits);
+        }
+
+        public override void Raycast(PointerEventData eventData, List<RaycastResult> resultAppendList)
+        {
+            for (int index = 0; index < _hits.Count; index++)
+            {
+                GameObject hit = _hits[index];
+                if (hit == null || !hit.activeInHierarchy) continue;
+                resultAppendList.Add(new RaycastResult
+                {
+                    gameObject = hit,
+                    module = this,
+                    distance = index,
+                    index = resultAppendList.Count,
+                    sortingOrder = 1000 - index,
+                    depth = 1000 - index,
+                    screenPosition = eventData.position,
+                });
+            }
+        }
     }
 }

@@ -62,7 +62,7 @@ EXAMPLES_CLOSE = "<!-- examples:end -->"
 EXAMPLES_PLACEHOLDER = (
     f"{EXAMPLES_OPEN}\n"
     "*No examples yet. Add usage examples here — they will be preserved across regenerations.*\n"
-    f"{EXAMPLES_CLOSE}\n"
+    f"{EXAMPLES_CLOSE}"
 )
 
 
@@ -277,7 +277,8 @@ def _read_existing_examples(path: Path) -> str:
     captured = match.group(1)
     if not captured.strip():
         return EXAMPLES_PLACEHOLDER
-    return f"{EXAMPLES_OPEN}\n{captured.strip()}\n{EXAMPLES_CLOSE}\n"
+    trailing = "\n" if text.endswith("\n\n") else ""
+    return f"{EXAMPLES_OPEN}\n{captured.strip()}\n{EXAMPLES_CLOSE}{trailing}"
 
 
 def render_tool_page(tool: dict[str, Any], existing_examples: str) -> str:
