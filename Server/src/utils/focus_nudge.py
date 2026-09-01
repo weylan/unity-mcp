@@ -9,6 +9,7 @@ Unity to focus, allows it to process, then returns focus to the original app.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
 import platform
@@ -63,6 +64,114 @@ class FocusNudgeState:
     last_attempt_time: float = 0.0
     consecutive_attempts: int = 0
     last_progress_time: float = 0.0
+
+
+@dataclass(frozen=True)
+class FocusTarget:
+    """An already-authorized local Unity process identity."""
+
+    user_id: str
+    session_id: str
+    process_id: int
+    project_root: str
+    peer_host: str
+
+
+@dataclass(frozen=True)
+class FocusNudgeResult:
+    """Outcome of one explicit focus attempt."""
+
+    outcome: str
+    reason: str | None = None
+
+    @property
+    def performed(self) -> bool:
+        return self.outcome == "completed"
+
+
+def _return_focus_nudge_result(
+    result: FocusNudgeResult,
+    return_result: bool,
+) -> bool | FocusNudgeResult:
+    return result if return_result else result.performed
+
+
+def canonical_project_root(project_root: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.abspath(project_root)))
+
+
+def _is_local_peer(peer_host: str) -> bool:
+    normalized = (peer_host or "").strip().strip("[]").lower()
+    if normalized == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_focus_target(target: FocusTarget | None) -> str | None:
+    if target is None:
+        return "exact focus target is required"
+    if not target.user_id.strip() or not target.session_id.strip():
+        return "user_id and session_id are required"
+    if not isinstance(target.process_id, int) or target.process_id <= 0:
+        return "a positive Unity process_id is required"
+    if not target.project_root.strip() or not os.path.isabs(target.project_root):
+        return "an absolute Unity project_root is required"
+    if not _is_local_peer(target.peer_host):
+        return "focus is allowed only for a loopback peer"
+    return None
+
+
+def _extract_project_root_from_command_line(command_line: str) -> str | None:
+    match = re.search(
+        r"(?:^|\s)-projectpath(?:\s+|=)(?:\"([^\"]+)\"|'([^']+)'|(.+?))(?=\s+-[A-Za-z]|$)",
+        command_line or "",
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    value = next((part for part in match.groups() if part is not None), "")
+    return value.strip()
+
+
+def _get_process_command_line(process_id: int) -> str | None:
+    try:
+        if platform.system() == "Windows":
+            script = (
+                f"(Get-CimInstance Win32_Process -Filter \"ProcessId = {process_id}\").CommandLine"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        else:
+            result = subprocess.run(
+                ["ps", "-p", str(process_id), "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        if result.returncode != 0:
+            return None
+        value = result.stdout.strip()
+        return value or None
+    except Exception as exc:
+        logger.debug("Could not inspect process %s: %s", process_id, exc)
+        return None
+
+
+def _process_matches_target(process_id: int, project_root: str) -> bool:
+    command_line = _get_process_command_line(process_id)
+    if command_line is None or "unity" not in command_line.lower():
+        return False
+    actual_root = _extract_project_root_from_command_line(command_line)
+    if actual_root is None:
+        return False
+    return canonical_project_root(actual_root) == canonical_project_root(project_root)
 
 
 @dataclass
@@ -418,12 +527,16 @@ public class Win32 {
     public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")]
     public static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+    [DllImport("user32.dll")]
+    public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 }
 "@
 $hwnd = [Win32]::GetForegroundWindow()
 $sb = New-Object System.Text.StringBuilder 256
 [Win32]::GetWindowText($hwnd, $sb, 256)
-$sb.ToString()
+$pidValue = 0
+[Win32]::GetWindowThreadProcessId($hwnd, [ref]$pidValue) | Out-Null
+$sb.ToString() + "|" + $pidValue
 '''
         result = subprocess.run(
             ["powershell", "-Command", script],
@@ -432,34 +545,43 @@ $sb.ToString()
             timeout=5,
         )
         if result.returncode == 0:
-            return _FrontmostAppInfo(name=result.stdout.strip())
+            output = result.stdout.strip()
+            title, _, raw_pid = output.rpartition("|")
+            try:
+                process_id = int(raw_pid)
+            except ValueError:
+                process_id = None
+                title = output
+            return _FrontmostAppInfo(name=title, pid=process_id)
     except Exception as e:
         logger.debug(f"Failed to get frontmost window: {e}")
     return None
 
 
-def _focus_app_windows(window_title: str) -> bool:
+def _focus_app_windows(window_title: str, process_id: int | None = None) -> bool:
     """Focus a window by title on Windows. For Unity, uses Unity Editor pattern."""
     try:
-        # For Unity, we use a pattern match since the title varies
-        if window_title == "Unity":
-            script = '''
+        if process_id is not None:
+            script = f'''
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
-public class Win32 {
+public class Win32 {{
     [DllImport("user32.dll")]
     public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-}
+}}
 "@
-$unity = Get-Process | Where-Object {$_.MainWindowTitle -like "*Unity*"} | Select-Object -First 1
-if ($unity) {
-    [Win32]::ShowWindow($unity.MainWindowHandle, 9)
-    [Win32]::SetForegroundWindow($unity.MainWindowHandle)
-}
+$target = Get-Process -Id {process_id} -ErrorAction SilentlyContinue
+if ($target -and $target.MainWindowHandle -ne 0) {{
+    [Win32]::ShowWindow($target.MainWindowHandle, 9)
+    [Win32]::SetForegroundWindow($target.MainWindowHandle)
+}} else {{
+    exit 3
+}}
 '''
+        # Legacy non-Unity restore remains title-based.
         else:
             # Try to find window by title - escape special PowerShell characters
             safe_title = window_title.replace("'", "''").replace("`", "``")
@@ -502,7 +624,18 @@ def _get_frontmost_app_linux() -> _FrontmostAppInfo | None:
             timeout=5,
         )
         if result.returncode == 0:
-            return _FrontmostAppInfo(name=result.stdout.strip())
+            window_id = result.stdout.strip()
+            pid_result = subprocess.run(
+                ["xdotool", "getwindowpid", window_id],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            try:
+                process_id = int(pid_result.stdout.strip()) if pid_result.returncode == 0 else None
+            except ValueError:
+                process_id = None
+            return _FrontmostAppInfo(name=window_id, pid=process_id)
     except Exception as e:
         logger.debug(f"Failed to get active window: {e}")
     return None
@@ -524,6 +657,21 @@ def _find_unity_window_linux() -> str | None:
     return None
 
 
+def _find_window_for_pid_linux(process_id: int) -> str | None:
+    try:
+        result = subprocess.run(
+            ["xdotool", "search", "--onlyvisible", "--pid", str(process_id)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().splitlines()[0]
+    except Exception as exc:
+        logger.debug("Failed to find window for PID %s: %s", process_id, exc)
+    return None
+
+
 def _focus_app_linux(window_id: str) -> bool:
     """Focus a window by ID on Linux, or Unity by name."""
     try:
@@ -541,6 +689,32 @@ def _focus_app_linux(window_id: str) -> bool:
         return result.returncode == 0
     except Exception as e:
         logger.debug(f"Failed to focus window {window_id}: {e}")
+    return False
+
+
+def _focus_exact_process(process_id: int, platform_name: str | None = None) -> bool:
+    system = platform_name or platform.system()
+    if system == "Darwin":
+        return _focus_app_macos("Unity", unity_pid=process_id)
+    if system == "Windows":
+        return _focus_app_windows("Unity", process_id=process_id)
+    if system == "Linux":
+        window_id = _find_window_for_pid_linux(process_id)
+        return window_id is not None and _focus_app_linux(window_id)
+    return False
+
+
+def _restore_original_focus(app_info: _FrontmostAppInfo, platform_name: str) -> bool:
+    if platform_name == "Darwin":
+        return _focus_app_macos(
+            app_info.name,
+            bundle_id=app_info.bundle_id,
+            unity_pid=app_info.pid if app_info.name == "Unity" else None,
+        )
+    if platform_name == "Windows":
+        return _focus_app_windows(app_info.name, process_id=app_info.pid)
+    if platform_name == "Linux":
+        return _focus_app_linux(app_info.name)
     return False
 
 
@@ -613,11 +787,13 @@ def _is_target_unity_frontmost(
 
 
 async def nudge_unity_focus(
+    target: FocusTarget | None = None,
     focus_duration_s: float | None = None,
     force: bool = False,
     unity_project_path: str | None = None,
     backoff_state: FocusNudgeState | None = None,
-) -> bool:
+    return_result: bool = False,
+) -> bool | FocusNudgeResult:
     """
     Temporarily focus Unity to allow it to process, then return focus.
 
@@ -631,15 +807,26 @@ async def nudge_unity_focus(
             If None, uses exponential backoff (3s/5s/8s/12s based on consecutive nudges).
             Can be overridden with UNITY_MCP_NUDGE_DURATION_S env var.
         force: If True, ignore the minimum interval between nudges
-        unity_project_path: Full path to Unity project root for multi-instance support.
-            e.g., "/Users/name/project" (NOT "/Users/name/project/Assets")
-            If None, targets any Unity process.
+        unity_project_path: Deprecated compatibility argument. It is ignored;
+            ``target`` is always required and no name-only fallback is allowed.
         backoff_state: Optional job-scoped backoff state. Callers managing multiple
             TestRunner jobs should provide a distinct state for each job.
+        return_result: Return a structured outcome instead of the legacy boolean.
 
     Returns:
-        True if nudge was performed, False if skipped or failed
+        By default, True only when focus and foreground restoration completed.
+        With ``return_result=True``, returns the precise structured outcome.
     """
+    validation_error = validate_focus_target(target)
+    if validation_error is not None:
+        logger.warning("Refusing Unity focus nudge: %s", validation_error)
+        return _return_focus_nudge_result(
+            FocusNudgeResult("not_performed", validation_error),
+            return_result,
+        )
+    assert target is not None
+    project_root = canonical_project_root(target.project_root)
+
     if focus_duration_s is None:
         # Use exponential backoff for focus duration
         focus_duration_s = _get_current_focus_duration(backoff_state)
@@ -649,7 +836,10 @@ async def nudge_unity_focus(
 
     if not _is_available():
         logger.debug("Focus nudging not available on this platform")
-        return False
+        return _return_focus_nudge_result(
+            FocusNudgeResult("not_performed", "focus nudge is unavailable on this platform"),
+            return_result,
+        )
 
     # Rate limit nudges using exponential backoff
     now = time.monotonic()
@@ -666,102 +856,115 @@ async def nudge_unity_focus(
     )
     if not force and (now - last_attempt_time) < current_interval:
         logger.debug(f"Skipping nudge - too soon since last nudge (interval: {current_interval:.1f}s)")
-        return False
+        return _return_focus_nudge_result(
+            FocusNudgeResult("not_performed", "focus nudge is rate limited"),
+            return_result,
+        )
 
     if backoff_state is not None:
         backoff_state.last_attempt_time = now
         backoff_state.consecutive_attempts += 1
 
     system = platform.system()
-    unity_pid: int | None = None
-    linux_window_id: str | None = None
-    if system == "Darwin" and unity_project_path:
-        unity_pid = await asyncio.to_thread(
-            _find_unity_pid_by_project_path,
-            unity_project_path,
+    if system not in {"Darwin", "Windows", "Linux"}:
+        return _return_focus_nudge_result(
+            FocusNudgeResult("not_performed", f"focus nudge is unsupported on {system}"),
+            return_result,
         )
-        if unity_pid is None:
-            logger.warning(
-                "Could not resolve Unity Editor for project %s",
-                unity_project_path,
-            )
-            return False
-    elif system == "Linux":
-        linux_window_id = await asyncio.to_thread(_find_unity_window_linux)
-        if linux_window_id is None:
-            logger.warning("Could not resolve a Unity Editor window")
-            return False
-
-    focus_kwargs: dict[str, int | str] = {}
-    if unity_pid is not None:
-        focus_kwargs["unity_pid"] = unity_pid
-    if linux_window_id is not None:
-        focus_kwargs["linux_window_id"] = linux_window_id
+    if not await asyncio.to_thread(
+        _process_matches_target,
+        target.process_id,
+        project_root,
+    ):
+        logger.warning(
+            "Unity PID %s no longer belongs to project %s",
+            target.process_id,
+            project_root,
+        )
+        return _return_focus_nudge_result(
+            FocusNudgeResult("not_performed", "Unity process identity no longer matches"),
+            return_result,
+        )
 
     # Get current frontmost app
     original_app = await asyncio.to_thread(_get_frontmost_app)
     if original_app is None:
         logger.debug("Could not determine frontmost app")
-        return False
+        return _return_focus_nudge_result(
+            FocusNudgeResult("not_performed", "current foreground app is unavailable"),
+            return_result,
+        )
 
     # Check if Unity is already focused (no nudge needed)
-    if _is_target_unity_frontmost(
-        original_app,
-        unity_pid=unity_pid,
-        linux_window_id=linux_window_id,
-    ):
+    if original_app.pid == target.process_id:
         logger.debug("Unity already focused, no nudge needed")
-        return False
+        return _return_focus_nudge_result(
+            FocusNudgeResult("not_performed", "target Unity process is already focused"),
+            return_result,
+        )
 
-    project_info = f" for {unity_project_path}" if unity_project_path else ""
-    logger.info(f"Nudging Unity focus{project_info} (interval: {current_interval:.1f}s, consecutive: {consecutive_attempts}, duration: {focus_duration_s:.1f}s, will return to {original_app})")
+    logger.info(
+        "Nudging exact Unity session=%s pid=%s project=%s "
+        "(interval=%.1fs consecutive=%s duration=%.1fs; return=%s)",
+        target.session_id,
+        target.process_id,
+        project_root,
+        current_interval,
+        consecutive_attempts,
+        focus_duration_s,
+        original_app,
+    )
 
-    # Focus Unity (with optional project path for multi-instance support)
+    # Close the PID-reuse/project-switch race immediately before OS mutation.
     if not await asyncio.to_thread(
-        _focus_app,
-        "Unity",
-        unity_project_path,
-        **focus_kwargs,
+        _process_matches_target,
+        target.process_id,
+        project_root,
     ):
-        logger.warning(f"Failed to focus Unity{project_info}")
-        return False
+        logger.warning("Unity focus target changed immediately before activation")
+        return _return_focus_nudge_result(
+            FocusNudgeResult("not_performed", "Unity process identity changed before focus"),
+            return_result,
+        )
+    if not await asyncio.to_thread(
+        _focus_exact_process,
+        target.process_id,
+        system,
+    ):
+        logger.warning("Failed to focus Unity PID %s", target.process_id)
+        return _return_focus_nudge_result(
+            FocusNudgeResult("focus_failed", "Unity activation failed"),
+            return_result,
+        )
 
+    result = FocusNudgeResult("focus_failed", "Unity activation could not be verified")
     try:
         # macOS activation is asynchronous, so verify the frontmost process after
         # its window-switch animation before counting or waiting on the nudge.
         await asyncio.sleep(0.5)
         current_app = await asyncio.to_thread(_get_frontmost_app)
-        if current_app is None or not _is_target_unity_frontmost(
-            current_app,
-            unity_pid=unity_pid,
-            linux_window_id=linux_window_id,
-        ):
+        if current_app is None or current_app.pid != target.process_id:
             logger.warning(
                 "Unity activation didn't complete - current app is %s",
                 current_app or "unknown",
             )
-            return False
-
-        if backoff_state is not None:
-            backoff_state.last_nudge_time = time.monotonic()
-            backoff_state.consecutive_nudges += 1
         else:
-            _last_nudge_time = time.monotonic()
-            _consecutive_nudges += 1
+            if backoff_state is not None:
+                backoff_state.last_nudge_time = time.monotonic()
+                backoff_state.consecutive_nudges += 1
+            else:
+                _last_nudge_time = time.monotonic()
+                _consecutive_nudges += 1
 
-        await asyncio.sleep(focus_duration_s)
-        return True
+            await asyncio.sleep(focus_duration_s)
+            result = FocusNudgeResult("completed")
     finally:
         # Cancellation and failed verification must not strand Unity in front.
-        if not _is_target_unity_frontmost(
-            original_app,
-            unity_pid=unity_pid,
-            linux_window_id=linux_window_id,
-        ):
+        if original_app.pid != target.process_id:
             restored = await asyncio.to_thread(
-                _focus_app,
+                _restore_original_focus,
                 original_app,
-                unity_pid=original_app.pid,
+                system,
             )
             if restored:
                 logger.info(
@@ -770,6 +973,12 @@ async def nudge_unity_focus(
                 )
             else:
                 logger.warning(f"Failed to return focus to {original_app}")
+                result = FocusNudgeResult(
+                    "restore_failed",
+                    "original foreground app could not be restored",
+                )
+
+    return _return_focus_nudge_result(result, return_result)
 
 
 def should_nudge(

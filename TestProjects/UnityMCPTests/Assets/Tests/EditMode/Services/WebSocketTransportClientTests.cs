@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
 using MCPForUnity.Editor.Services.Transport.Transports;
+using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 
 namespace MCPForUnityTests.Editor.Services
@@ -113,6 +116,32 @@ namespace MCPForUnityTests.Editor.Services
             // Assert
             Assert.IsTrue(client.State.IsConnected);
             Assert.AreEqual("pending", client.State.SessionId);
+        }
+
+        [Test]
+        public void BuildRegisterPayload_IncludesExactProjectRootAndCurrentProcessId()
+        {
+            var client = new WebSocketTransportClient();
+            string projectRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "ExactProject"));
+            SetPrivateField(client, "_projectName", "ExactProject");
+            SetPrivateField(client, "_projectHash", "hash-exact");
+            SetPrivateField(client, "_unityVersion", "2022.3");
+            SetPrivateField(client, "_projectPath", projectRoot);
+
+            const BindingFlags flags = BindingFlags.NonPublic | BindingFlags.Instance;
+            MethodInfo method = typeof(WebSocketTransportClient).GetMethod(
+                "BuildRegisterPayload",
+                flags,
+                binder: null,
+                types: Type.EmptyTypes,
+                modifiers: null);
+            Assert.IsNotNull(method, "Registration identity must be built in one testable production method.");
+            var payload = method.Invoke(client, Array.Empty<object>()) as JObject;
+
+            Assert.IsNotNull(payload);
+            Assert.AreEqual(Process.GetCurrentProcess().Id, payload.Value<int>("process_id"));
+            Assert.AreEqual(projectRoot, payload.Value<string>("project_path"));
+            Assert.AreEqual("hash-exact", payload.Value<string>("project_hash"));
         }
 
         private static List<Uri> InvokeBuildConnectionCandidateUris(Uri endpoint)

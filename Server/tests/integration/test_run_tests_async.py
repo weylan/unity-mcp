@@ -1,9 +1,54 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
+
+import asyncio
 
 import pytest
 
 from .test_helpers import DummyContext
+
+
+@pytest.mark.asyncio
+async def test_get_test_job_is_observational_for_stalled_unfocused_job(monkeypatch):
+    """A read must not resolve focus identity, mutate nudge state, or touch the OS."""
+    import services.tools.run_tests as mod
+
+    stalled = {
+        "success": True,
+        "data": {
+            "job_id": "job-observe",
+            "status": "running",
+            "phase": "running",
+            "last_update_unix_ms": 1,
+            "physical_owner_retained": True,
+            "progress": {"editor_is_focused": False},
+        },
+    }
+    monkeypatch.setattr(
+        mod,
+        "get_unity_instance_from_context",
+        AsyncMock(side_effect=["Project@hash", "local-user"]),
+    )
+    send = AsyncMock(return_value=stalled)
+    monkeypatch.setattr(mod.unity_transport, "send_with_unity_instance", send)
+    focus = AsyncMock(return_value=True)
+    monkeypatch.setattr(mod, "nudge_unity_focus", focus)
+    if hasattr(mod, "_get_unity_project_path"):
+        monkeypatch.setattr(
+            mod,
+            "_get_unity_project_path",
+            AsyncMock(return_value="/tmp/ExactProject"),
+        )
+
+    before = dict(getattr(mod, "_nudge_states", {}))
+    response = await mod.get_test_job(MagicMock(), "job-observe")
+    await asyncio.sleep(0)
+
+    assert response.data is not None
+    assert response.data.job_id == "job-observe"
+    assert send.await_count == 1
+    focus.assert_not_awaited()
+    assert dict(getattr(mod, "_nudge_states", {})) == before
 
 
 @pytest.mark.asyncio
@@ -244,24 +289,35 @@ async def test_get_test_job_forwards_job_id(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_project_path_resolution_reuses_user_scoped_hub_session(monkeypatch):
+async def test_focus_target_resolution_reuses_user_scoped_hub_session(monkeypatch):
     import services.tools.run_tests as mod
 
     resolve_session = AsyncMock(return_value="session-user-a")
     get_session = AsyncMock(return_value=SimpleNamespace(
+        session_id="session-user-a",
         project_path="/Users/test/UnityProject",
         project_name="UnityProject",
+        process_id=4242,
+        peer_host="127.0.0.1",
+        user_id="user-a",
     ))
     monkeypatch.setattr(mod.unity_transport, "_is_http_transport", lambda: True)
     monkeypatch.setattr(mod.PluginHub, "_resolve_session_id", resolve_session)
     monkeypatch.setattr(mod.PluginHub, "_registry", SimpleNamespace(get_session=get_session))
 
-    project_path = await mod._get_unity_project_path(
+    target, error = await mod._resolve_focus_target(
         "UnityProject@project-hash",
         user_id="user-a",
     )
 
-    assert project_path == "/Users/test/UnityProject"
+    assert error is None
+    assert target == mod.FocusTarget(
+        user_id="user-a",
+        session_id="session-user-a",
+        process_id=4242,
+        project_root=mod.canonical_project_root("/Users/test/UnityProject"),
+        peer_host="127.0.0.1",
+    )
     resolve_session.assert_awaited_once_with(
         "UnityProject@project-hash",
         user_id="user-a",
@@ -271,20 +327,29 @@ async def test_project_path_resolution_reuses_user_scoped_hub_session(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_project_path_resolution_uses_stdio_instance_assets_path(monkeypatch):
+async def test_focus_target_resolution_uses_stdio_instance_assets_path(monkeypatch):
     import services.tools.run_tests as mod
 
     instance = SimpleNamespace(
+        id="stdio-instance",
         path="/Users/test/UnityProject/Assets",
         name="UnityProject",
+        process_id=5252,
     )
     registry = SimpleNamespace(get_instance=lambda _instance: instance)
     monkeypatch.setattr(mod.unity_transport, "_is_http_transport", lambda: False)
     monkeypatch.setattr(mod, "stdio_port_registry", registry, raising=False)
 
-    project_path = await mod._get_unity_project_path("UnityProject@project-hash")
+    target, error = await mod._resolve_focus_target("UnityProject@project-hash", None)
 
-    assert project_path == "/Users/test/UnityProject"
+    assert error is None
+    assert target == mod.FocusTarget(
+        user_id="local",
+        session_id="stdio-instance",
+        process_id=5252,
+        project_root=mod.canonical_project_root("/Users/test/UnityProject"),
+        peer_host="127.0.0.1",
+    )
 
 
 @pytest.mark.asyncio
@@ -331,8 +396,6 @@ async def test_get_test_job_waits_for_physical_terminal_after_logical_failure(mo
     monkeypatch.setattr(
         mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
     monkeypatch.setattr(mod.asyncio, "sleep", no_sleep)
-    monkeypatch.setattr(mod, "_get_unity_project_path", lambda _instance: _async_none())
-
     resp = await get_test_job(DummyContext(), job_id="job-fenced", wait_timeout=1)
 
     assert calls == 2
@@ -343,12 +406,9 @@ async def test_get_test_job_waits_for_physical_terminal_after_logical_failure(mo
 
 
 @pytest.mark.asyncio
-async def test_get_test_job_single_flights_background_nudge_per_job(monkeypatch):
+async def test_get_test_job_never_starts_background_nudge(monkeypatch):
     from services.tools.run_tests import get_test_job
     import services.tools.run_tests as mod
-
-    nudge_started = 0
-    release_nudge = mod.asyncio.Event()
 
     async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
         return {
@@ -361,20 +421,10 @@ async def test_get_test_job_single_flights_background_nudge_per_job(monkeypatch)
             },
         }
 
-    async def fake_project_path(_instance):
-        return "/Users/test/UnityProject"
-
-    async def fake_nudge(**_kwargs):
-        nonlocal nudge_started
-        nudge_started += 1
-        await release_nudge.wait()
-        return True
-
     monkeypatch.setattr(
         mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
-    monkeypatch.setattr(mod, "_get_unity_project_path", fake_project_path)
-    monkeypatch.setattr(mod, "should_nudge", lambda **_kwargs: True)
-    monkeypatch.setattr(mod, "nudge_unity_focus", fake_nudge)
+    focus = AsyncMock(return_value=True)
+    monkeypatch.setattr(mod, "nudge_unity_focus", focus)
 
     await mod.asyncio.gather(
         get_test_job(DummyContext(), job_id="job-one"),
@@ -382,51 +432,7 @@ async def test_get_test_job_single_flights_background_nudge_per_job(monkeypatch)
     )
     await mod.asyncio.sleep(0)
 
-    assert nudge_started == 1
-    release_nudge.set()
-    await mod.asyncio.sleep(0)
-
-
-@pytest.mark.asyncio
-async def test_get_test_job_nudge_backoff_is_isolated_by_job(monkeypatch):
-    from services.tools.run_tests import get_test_job
-    import services.tools.run_tests as mod
-
-    states = []
-
-    async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
-        return {
-            "success": True,
-            "data": {
-                "job_id": params["job_id"],
-                "status": "running",
-                "last_update_unix_ms": 1,
-                "progress": {"editor_is_focused": False},
-            },
-        }
-
-    async def fake_project_path(_instance):
-        return "/Users/test/UnityProject"
-
-    async def fake_nudge(**kwargs):
-        states.append(kwargs.get("backoff_state"))
-        return True
-
-    monkeypatch.setattr(
-        mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
-    monkeypatch.setattr(mod, "_get_unity_project_path", fake_project_path)
-    monkeypatch.setattr(mod, "should_nudge", lambda **_kwargs: True)
-    monkeypatch.setattr(mod, "nudge_unity_focus", fake_nudge)
-
-    await get_test_job(DummyContext(), job_id="job-one")
-    await mod.asyncio.sleep(0)
-    await get_test_job(DummyContext(), job_id="job-two")
-    await mod.asyncio.sleep(0)
-
-    assert len(states) == 2
-    assert states[0] is not None
-    assert states[1] is not None
-    assert states[0] is not states[1]
+    focus.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -434,8 +440,6 @@ async def test_get_test_job_wait_timeout_is_not_extended_by_nudge(monkeypatch):
     from services.tools.run_tests import get_test_job
     import services.tools.run_tests as mod
 
-    release_nudge = mod.asyncio.Event()
-
     async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
         return {
             "success": True,
@@ -447,18 +451,10 @@ async def test_get_test_job_wait_timeout_is_not_extended_by_nudge(monkeypatch):
             },
         }
 
-    async def fake_project_path(_instance):
-        return "/Users/test/UnityProject"
-
-    async def fake_nudge(**_kwargs):
-        await release_nudge.wait()
-        return True
-
     monkeypatch.setattr(
         mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
-    monkeypatch.setattr(mod, "_get_unity_project_path", fake_project_path)
-    monkeypatch.setattr(mod, "should_nudge", lambda **_kwargs: True)
-    monkeypatch.setattr(mod, "nudge_unity_focus", fake_nudge)
+    focus = AsyncMock(return_value=True)
+    monkeypatch.setattr(mod, "nudge_unity_focus", focus)
 
     response = await mod.asyncio.wait_for(
         get_test_job(DummyContext(), job_id="job-timeout", wait_timeout=0.02),
@@ -468,73 +464,125 @@ async def test_get_test_job_wait_timeout_is_not_extended_by_nudge(monkeypatch):
     assert response.success is True
     assert response.data is not None
     assert response.data.status == "running"
-    release_nudge.set()
-    await mod.asyncio.sleep(0)
+    focus.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_get_test_job_skips_nudge_without_project_identity(monkeypatch):
-    from services.tools.run_tests import get_test_job
+async def test_nudge_test_job_resolves_and_uses_one_exact_target(monkeypatch):
     import services.tools.run_tests as mod
+    from utils.focus_nudge import FocusTarget
 
-    nudge_calls = 0
-
-    async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
-        return {
+    target = FocusTarget(
+        user_id="user-a",
+        session_id="session-a",
+        process_id=4242,
+        project_root="/workspace/ExactProject",
+        peer_host="127.0.0.1",
+    )
+    monkeypatch.setattr(
+        mod,
+        "get_unity_instance_from_context",
+        AsyncMock(side_effect=["ExactProject@hash", "user-a"]),
+    )
+    monkeypatch.setattr(
+        mod.unity_transport,
+        "send_with_unity_instance",
+        AsyncMock(return_value={
             "success": True,
             "data": {
-                "job_id": params["job_id"],
+                "job_id": "job-exact",
                 "status": "running",
-                "last_update_unix_ms": 1,
-                "progress": {"editor_is_focused": False},
+                "phase": "running",
+                "physical_owner_retained": True,
             },
-        }
+        }),
+    )
+    resolve = AsyncMock(return_value=(target, None))
+    focus = AsyncMock(return_value=True)
+    monkeypatch.setattr(mod, "_resolve_focus_target", resolve)
+    monkeypatch.setattr(mod, "nudge_unity_focus", focus)
 
-    async def fake_nudge(**_kwargs):
-        nonlocal nudge_calls
-        nudge_calls += 1
-        return True
+    response = await mod.nudge_test_job(DummyContext(), "job-exact", focus_duration=0.5)
 
+    assert response.success is True
+    assert response.data["performed"] is True
+    resolve.assert_awaited_once_with("ExactProject@hash", "user-a")
+    focus.assert_awaited_once_with(
+        target, focus_duration_s=0.5, force=True, return_result=True)
+
+
+@pytest.mark.asyncio
+async def test_nudge_test_job_rejects_remote_hosting_before_unity_or_focus(monkeypatch):
+    import services.tools.run_tests as mod
+    from core.config import config
+
+    monkeypatch.setattr(config, "http_remote_hosted", True)
+    context_lookup = AsyncMock()
+    send = AsyncMock()
+    focus = AsyncMock()
+    monkeypatch.setattr(mod, "get_unity_instance_from_context", context_lookup)
+    monkeypatch.setattr(mod.unity_transport, "send_with_unity_instance", send)
+    monkeypatch.setattr(mod, "nudge_unity_focus", focus)
+
+    response = await mod.nudge_test_job(DummyContext(), "job-remote")
+
+    assert response.success is False
+    assert "remote" in response.error.lower()
+    context_lookup.assert_not_awaited()
+    send.assert_not_awaited()
+    focus.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        ("not_performed", "focus is unavailable"),
+        ("focus_failed", "Unity activation failed"),
+        ("restore_failed", "original foreground app could not be restored"),
+    ],
+)
+async def test_nudge_test_job_reports_non_success_outcomes(monkeypatch, outcome, reason):
+    import services.tools.run_tests as mod
+    from core.config import config
+    from utils.focus_nudge import FocusTarget
+
+    monkeypatch.setattr(config, "http_remote_hosted", False)
+    target = FocusTarget(
+        "local", "session-a", 4242, "/workspace/ExactProject", "127.0.0.1")
     monkeypatch.setattr(
-        mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
-    project_lookups = 0
+        mod,
+        "get_unity_instance_from_context",
+        AsyncMock(side_effect=["ExactProject@hash", "local"]),
+    )
+    monkeypatch.setattr(
+        mod.unity_transport,
+        "send_with_unity_instance",
+        AsyncMock(return_value={
+            "success": True,
+            "data": {
+                "job_id": "job-exact",
+                "status": "running",
+                "phase": "running",
+                "physical_owner_retained": True,
+            },
+        }),
+    )
+    monkeypatch.setattr(
+        mod, "_resolve_focus_target", AsyncMock(return_value=(target, None)))
+    monkeypatch.setattr(
+        mod,
+        "nudge_unity_focus",
+        AsyncMock(return_value=SimpleNamespace(
+            outcome=outcome,
+            performed=False,
+            reason=reason,
+        )),
+    )
 
-    async def missing_project(*_args, **_kwargs):
-        nonlocal project_lookups
-        project_lookups += 1
-        return None
+    response = await mod.nudge_test_job(DummyContext(), "job-exact")
 
-    monkeypatch.setattr(mod, "_get_unity_project_path", missing_project)
-    monkeypatch.setattr(mod, "should_nudge", lambda **_kwargs: True)
-    monkeypatch.setattr(mod, "nudge_unity_focus", fake_nudge)
-
-    await get_test_job(DummyContext(), job_id="job-without-project")
-    await mod.asyncio.sleep(0)
-    await get_test_job(DummyContext(), job_id="job-without-project")
-    await mod.asyncio.sleep(0)
-
-    assert nudge_calls == 0
-    assert project_lookups == 1
-
-
-def test_job_nudge_state_cache_has_a_hard_upper_bound(monkeypatch):
-    import services.tools.run_tests as mod
-
-    monkeypatch.setattr(mod, "_nudge_states", {})
-    monkeypatch.setattr(mod, "_background_tasks", {})
-
-    for index in range(mod._MAX_NUDGE_STATES + 20):
-        mod._get_job_nudge_state(("user", "instance", f"job-{index}"))
-
-    assert len(mod._nudge_states) <= mod._MAX_NUDGE_STATES
-
-
-def test_nudge_state_key_is_user_scoped():
-    import services.tools.run_tests as mod
-
-    assert mod._nudge_key("Project@hash", "job-one", "user-a") != mod._nudge_key(
-        "Project@hash", "job-one", "user-b")
-
-
-async def _async_none():
-    return None
+    assert response.success is False
+    assert response.error == reason
+    assert response.data["outcome"] == outcome
+    assert response.data["performed"] is False

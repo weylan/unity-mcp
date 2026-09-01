@@ -36,6 +36,31 @@ from models.models import (
     ToolDefinitionModel,
 )
 from models.unity_response import normalize_unity_response
+from transport.legacy.port_discovery import PortDiscovery
+
+
+def test_stdio_discovery_preserves_pid_and_project_identity(tmp_path, monkeypatch):
+    status = tmp_path / "unity-mcp-status-deadbeef.json"
+    status.write_text(json.dumps({
+        "unity_port": 6401,
+        "project_path": "/workspace/ExactProject/Assets",
+        "project_name": "ExactProject",
+        "process_id": 4242,
+        "reloading": False,
+        "last_heartbeat": "2026-09-01T00:00:00+00:00",
+    }), encoding="utf-8")
+    monkeypatch.setenv("UNITY_MCP_STATUS_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        PortDiscovery,
+        "_try_probe_unity_mcp",
+        staticmethod(lambda _port: True),
+    )
+
+    instances = PortDiscovery.discover_all_unity_instances()
+
+    assert len(instances) == 1
+    assert instances[0].process_id == 4242
+    assert instances[0].path == "/workspace/ExactProject/Assets"
 
 
 class TestMCPResponseModel:

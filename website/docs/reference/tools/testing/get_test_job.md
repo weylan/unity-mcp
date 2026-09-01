@@ -1,7 +1,7 @@
 ---
 title: get_test_job
 sidebar_label: get_test_job
-description: "Polls an async Unity test job by job_id."
+description: "Observationally polls an async Unity test job without changing focus or lifecycle state."
 ---
 
 # `get_test_job`
@@ -12,7 +12,9 @@ description: "Polls an async Unity test job by job_id."
 
 ## Description
 
-Polls an async Unity test job by job_id.
+Observationally polls an async Unity test job by `job_id`. Reads never focus Unity,
+advance a timeout, or write lifecycle state. If an operator explicitly wants to
+temporarily foreground one exact local Editor, use [`nudge_test_job`](./nudge_test_job.md).
 
 ## Parameters
 
@@ -32,4 +34,3 @@ A `dict` containing the Unity response. The exact shape depends on the action.
 <!-- examples:start -->
 *No examples yet. Add usage examples here — they will be preserved across regenerations.*
 <!-- examples:end -->
-

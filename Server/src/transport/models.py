@@ -37,6 +37,7 @@ class RegisterMessage(BaseModel):
     project_hash: str
     unity_version: str = "Unknown"
     project_path: str | None = None  # Full path to project root (for focus nudging)
+    process_id: int | None = None
 
 
 class RegisterToolsMessage(BaseModel):

@@ -46,6 +46,7 @@ class UnityInstanceInfo(BaseModel):
     last_heartbeat: datetime | None = None
     unity_version: str | None = None
     project_scoped_tools: bool = False
+    process_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -59,4 +60,5 @@ class UnityInstanceInfo(BaseModel):
             "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
             "unity_version": self.unity_version,
             "project_scoped_tools": self.project_scoped_tools,
+            "process_id": self.process_id,
         }

@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using MCPForUnity.Editor.Services;
 using NUnit.Framework;
 using UnityEditor.TestTools.TestRunner.Api;
+using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace MCPForUnityTests.Editor.Services
 {
@@ -87,6 +90,69 @@ namespace MCPForUnityTests.Editor.Services
             Assert.AreEqual(before.Generation, restored.Generation);
             Assert.AreEqual(TestJobPhase.AwaitingRunStarted, restored.Phase);
             Assert.AreEqual(before.AwaitingRunStartedSinceUnixMs, restored.AwaitingRunStartedSinceUnixMs);
+        }
+
+        [Test]
+        public void GetTestJobHandler_AfterDeadline_IsReadOnlyUntilWatchdogTicks()
+        {
+            string jobId = TestJobManager.StartJob(
+                TestMode.EditMode,
+                new TestFilterOptions { TestNames = new[] { "Getter.Must.Be.Pure" } },
+                initTimeoutMs: 100);
+            _scheduled[0]();
+            TestJobIdentity owner = TestJobManager.PhysicalOwnerForTests.Value;
+            _now += 101;
+
+            int persistenceAttempts = 0;
+            TestJobManager.PersistSnapshotForTests = _ =>
+            {
+                persistenceAttempts++;
+                return true;
+            };
+
+            TestJob first = TestJobManager.GetJob(jobId);
+            TestJob second = TestJobManager.GetJob(jobId);
+
+            Assert.AreEqual(TestJobStatus.Running, first.Status);
+            Assert.AreEqual(TestJobStatus.Running, second.Status);
+            Assert.AreEqual(TestJobPhase.AwaitingRunStarted, second.Phase);
+            Assert.AreEqual(0, persistenceAttempts, "A getter must not advance or persist lifecycle state.");
+            Assert.AreEqual(owner, TestJobManager.PhysicalOwnerForTests.Value);
+
+            Assert.IsTrue(TestJobManager.LifecycleWatchdogTickForTests());
+            Assert.AreEqual(1, persistenceAttempts);
+            Assert.AreEqual(TestJobStatus.Failed, TestJobManager.GetJob(jobId).Status);
+            Assert.AreEqual(owner, TestJobManager.PhysicalOwnerForTests.Value);
+        }
+
+        [Test]
+        public void LifecycleWatchdog_AwaitingTimeout_PersistFirstRollbackAndRetainsPhysicalOwner()
+        {
+            string jobId = TestJobManager.StartJob(
+                TestMode.EditMode,
+                new TestFilterOptions { TestNames = new[] { "Awaiting.Rollback" } },
+                initTimeoutMs: 100);
+            _scheduled[0]();
+            TestJobIdentity owner = TestJobManager.PhysicalOwnerForTests.Value;
+            _now += 101;
+
+            TestJobManager.PersistSnapshotForTests = _ => false;
+            LogAssert.Expect(LogType.Error,
+                new Regex("Critical lifecycle persistence failed; retaining the prior physical fence\\."));
+            Assert.IsFalse(TestJobManager.LifecycleWatchdogTickForTests());
+            TestJob rolledBack = TestJobManager.GetJob(jobId);
+            Assert.AreEqual(TestJobStatus.Running, rolledBack.Status);
+            Assert.IsNull(rolledBack.FinishedUnixMs);
+            Assert.AreEqual(owner, TestJobManager.PhysicalOwnerForTests.Value);
+
+            TestJobManager.PersistSnapshotForTests = _ => true;
+            Assert.IsTrue(TestJobManager.LifecycleWatchdogTickForTests());
+            TestJob durable = TestJobManager.GetJob(jobId);
+            Assert.AreEqual(TestJobStatus.Failed, durable.Status);
+            Assert.AreEqual(TestJobPhase.AwaitingRunStarted, durable.Phase);
+            Assert.IsNotNull(durable.FinishedUnixMs);
+            Assert.AreEqual(owner, TestJobManager.PhysicalOwnerForTests.Value,
+                "Logical timeout cannot release Unity's physical callback owner.");
         }
     }
 }

@@ -4,14 +4,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import time
-from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
 
 from fastmcp import Context
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
+from core.config import config
 from models import MCPResponse
 from services.registry import mcp_for_unity_tool
 from services.tools import get_unity_instance_from_context
@@ -21,143 +20,23 @@ from transport.legacy.unity_connection import async_send_command_with_retry
 from transport.legacy.stdio_port_registry import stdio_port_registry
 from transport.plugin_hub import PluginHub
 from utils.focus_nudge import (
-    FocusNudgeState,
+    FocusTarget,
+    canonical_project_root,
     nudge_unity_focus,
-    reset_nudge_backoff,
-    should_nudge,
 )
 
 logger = logging.getLogger(__name__)
 
-_NudgeKey = tuple[str, str, str]
-_MAX_NUDGE_STATES = 128
-_PROJECT_LOOKUP_RETRY_S = 5.0
-
-
-@dataclass
-class _JobNudgeState:
-    backoff: FocusNudgeState = field(default_factory=FocusNudgeState)
-    project_path: str | None = None
-    last_project_lookup_time: float = 0.0
-    last_seen_time: float = field(default_factory=time.monotonic)
-
-
-# A job may be polled concurrently by several clients. Keep one nudge task and
-# one backoff sequence per Unity instance/job instead of sharing module globals.
-_background_tasks: dict[_NudgeKey, asyncio.Task[bool]] = {}
-_nudge_states: dict[_NudgeKey, _JobNudgeState] = {}
-
-
-def _nudge_key(
-    unity_instance: str | None,
-    job_id: str,
-    user_id: str | None,
-) -> _NudgeKey:
-    return (user_id or "", unity_instance or "", job_id)
-
-
-def _get_job_nudge_state(key: _NudgeKey) -> _JobNudgeState:
-    now = time.monotonic()
-    existing = _nudge_states.get(key)
-    if existing is not None:
-        existing.last_seen_time = now
-        return existing
-
-    if len(_nudge_states) >= _MAX_NUDGE_STATES:
-        inactive_keys = [candidate for candidate in _nudge_states if candidate not in _background_tasks]
-        if inactive_keys:
-            oldest = min(
-                inactive_keys,
-                key=lambda candidate: _nudge_states[candidate].last_seen_time,
-            )
-            _nudge_states.pop(oldest, None)
-
-    state = _JobNudgeState(last_seen_time=now)
-    _nudge_states[key] = state
-    return state
-
-
-async def _get_job_project_path(
-    key: _NudgeKey,
+async def _resolve_focus_target(
     unity_instance: str | None,
     user_id: str | None,
-) -> tuple[str | None, bool]:
-    state = _get_job_nudge_state(key)
-    if state.project_path is not None:
-        return state.project_path, False
-
-    now = time.monotonic()
-    if (
-        state.last_project_lookup_time > 0
-        and now - state.last_project_lookup_time < _PROJECT_LOOKUP_RETRY_S
-    ):
-        return None, False
-
-    state.last_project_lookup_time = now
-    if user_id is None:
-        project_path = await _get_unity_project_path(unity_instance)
-    else:
-        project_path = await _get_unity_project_path(unity_instance, user_id=user_id)
-    if project_path is not None:
-        state.project_path = project_path
-    return project_path, True
-
-
-async def _perform_job_nudge(
-    key: _NudgeKey,
-    project_path: str,
-    state: FocusNudgeState,
-) -> bool:
-    try:
-        return await nudge_unity_focus(
-            unity_project_path=project_path,
-            backoff_state=state,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("Focus nudge failed for TestRunner job %s", key[2])
-        return False
-
-
-def _remove_finished_nudge(key: _NudgeKey, task: asyncio.Task[bool]) -> None:
-    if _background_tasks.get(key) is task:
-        _background_tasks.pop(key, None)
-
-
-def _get_or_start_job_nudge(key: _NudgeKey, project_path: str) -> asyncio.Task[bool]:
-    existing = _background_tasks.get(key)
-    if existing is not None and not existing.done():
-        return existing
-
-    state = _get_job_nudge_state(key)
-    task = asyncio.create_task(_perform_job_nudge(key, project_path, state.backoff))
-    _background_tasks[key] = task
-    task.add_done_callback(lambda done, task_key=key: _remove_finished_nudge(task_key, done))
-    return task
-
-
-def _forget_job_nudge_state(key: _NudgeKey) -> None:
-    _nudge_states.pop(key, None)
-
-
-async def _get_unity_project_path(
-    unity_instance: str | None,
-    user_id: str | None = None,
-) -> str | None:
-    """Get the project root path for a Unity instance (for focus nudging).
-
-    Args:
-        unity_instance: Unity instance hash or "Name@hash" format or None
-
-    Returns:
-        Project root path (e.g., "/Users/name/project"), or falls back to project_name if path unavailable
-    """
+) -> tuple[FocusTarget | None, str | None]:
+    """Resolve one selected Unity instance into an exact local focus identity."""
     try:
         if unity_transport._is_http_transport():
             registry = PluginHub._registry
             if registry is None:
-                return None
+                return None, "WebSocket session registry is unavailable"
             session_id = await PluginHub._resolve_session_id(
                 unity_instance,
                 user_id=user_id,
@@ -165,30 +44,41 @@ async def _get_unity_project_path(
             )
             session = await registry.get_session(session_id)
             if session is None:
-                return None
-            if session.project_path:
-                return session.project_path
-            return session.project_name if session.project_name else None
+                return None, "selected Unity session is no longer connected"
+            expected_user = user_id or "local"
+            actual_user = session.user_id or "local"
+            if actual_user != expected_user:
+                return None, "selected Unity session does not belong to the current user"
+            if not session.project_path or not session.process_id or not session.peer_host:
+                return None, "Unity registration is missing PID, project root, or peer identity"
+            return FocusTarget(
+                user_id=expected_user,
+                session_id=session.session_id,
+                process_id=session.process_id,
+                project_root=canonical_project_root(session.project_path),
+                peer_host=session.peer_host,
+            ), None
 
-        instance = await asyncio.to_thread(
-            stdio_port_registry.get_instance,
-            unity_instance,
-        )
+        instance = await asyncio.to_thread(stdio_port_registry.get_instance, unity_instance)
         if instance is None:
-            return None
-        if instance.path:
-            project_path = os.path.normpath(instance.path)
-            if os.path.basename(project_path).lower() == "assets":
-                project_path = os.path.dirname(project_path)
-            return project_path
-        return instance.name if instance.name else None
-
-    except Exception as e:
-        # Re-raise cancellation errors so task cancellation propagates
-        if isinstance(e, asyncio.CancelledError):
-            raise
-        logger.debug(f"Could not get Unity project path: {e}")
-        return None
+            return None, "selected stdio Unity instance is unavailable"
+        if not instance.path or not instance.process_id:
+            return None, "stdio heartbeat is missing PID or project identity"
+        project_root = instance.path
+        if os.path.basename(project_root.rstrip("/\\")).lower() == "assets":
+            project_root = os.path.dirname(project_root.rstrip("/\\"))
+        return FocusTarget(
+            user_id=user_id or "local",
+            session_id=instance.id,
+            process_id=instance.process_id,
+            project_root=canonical_project_root(project_root),
+            peer_host="127.0.0.1",
+        ), None
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.debug("Could not resolve exact Unity focus target: %s", exc)
+        return None, str(exc)
 
 
 class RunTestsSummary(BaseModel):
@@ -253,6 +143,8 @@ class GetTestJobData(BaseModel):
     status: str
     phase: str | None = None
     mode: str | None = None
+    created_unix_ms: int | None = None
+    queued_deadline_unix_ms: int | None = None
     started_unix_ms: int | None = None
     awaiting_run_started_since_unix_ms: int | None = None
     finished_unix_ms: int | None = None
@@ -396,7 +288,7 @@ async def run_tests(
 
 @mcp_for_unity_tool(
     group="testing",
-    description="Polls an async Unity test job by job_id.",
+    description="Observationally polls an async Unity test job by job_id without changing focus or lifecycle state.",
     annotations=ToolAnnotations(
         title="Get Test Job",
         readOnlyHint=True,
@@ -418,8 +310,6 @@ async def get_test_job(
                             "Recommended: 30-60 seconds. Returns immediately if tests complete sooner."] = None,
 ) -> GetTestJobResponse | MCPResponse:
     unity_instance = await get_unity_instance_from_context(ctx)
-    user_id = await get_unity_instance_from_context(ctx, key="user_id")
-    nudge_key = _nudge_key(unity_instance, job_id, user_id)
 
     params: dict[str, Any] = {"job_id": job_id}
     if include_failed_tests:
@@ -439,78 +329,20 @@ async def get_test_job(
     if wait_timeout and wait_timeout > 0:
         deadline = asyncio.get_running_loop().time() + wait_timeout
         poll_interval = 2.0  # Poll Unity every 2 seconds
-        prev_last_update_unix_ms = None
 
         while True:
             response = await _fetch_status()
 
             if not isinstance(response, dict):
-                _forget_job_nudge_state(nudge_key)
                 return MCPResponse(success=False, error=str(response))
 
             if not response.get("success", True):
-                _forget_job_nudge_state(nudge_key)
                 return MCPResponse(**response)
 
             # Check if tests are done
             data = response.get("data", {})
             if _is_physical_terminal(data):
-                _forget_job_nudge_state(nudge_key)
                 return GetTestJobResponse(**response)
-
-            # Detect progress and reset exponential backoff
-            last_update_unix_ms = data.get("last_update_unix_ms")
-            if prev_last_update_unix_ms is not None and last_update_unix_ms != prev_last_update_unix_ms:
-                # Progress detected - reset exponential backoff for next potential stall
-                state = _nudge_states.get(nudge_key)
-                if state is not None:
-                    reset_nudge_backoff(state.backoff)
-                logger.debug(f"Test job {job_id} made progress - reset nudge backoff")
-            prev_last_update_unix_ms = last_update_unix_ms
-
-            # Check if Unity needs a focus nudge to make progress
-            # This handles OS-level throttling (e.g., macOS App Nap) that can
-            # stall PlayMode tests when Unity is in the background.
-            # Uses exponential backoff: 1s, 2s, 4s, 8s, 10s max between nudges.
-            progress = data.get("progress") or {}
-            editor_is_focused = progress.get("editor_is_focused", True)
-            current_time_ms = int(time.time() * 1000)
-
-            if should_nudge(
-                status=_physical_nudge_status(data),
-                editor_is_focused=editor_is_focused,
-                last_update_unix_ms=last_update_unix_ms,
-                current_time_ms=current_time_ms,
-                # Use default stall_threshold_ms (3s)
-            ):
-                logger.info(f"Test job {job_id} appears stalled (unfocused Unity), attempting nudge...")
-                project_path, lookup_attempted = await _get_job_project_path(
-                    nudge_key,
-                    unity_instance,
-                    user_id,
-                )
-                if project_path is None:
-                    if lookup_attempted:
-                        logger.warning(
-                            "Skipping focus nudge for TestRunner job %s because its Unity project identity is unavailable",
-                            job_id,
-                        )
-                else:
-                    remaining = deadline - asyncio.get_running_loop().time()
-                    if remaining <= 0:
-                        return GetTestJobResponse(**response)
-                    nudge_task = _get_or_start_job_nudge(nudge_key, project_path)
-                    try:
-                        nudged = await asyncio.wait_for(
-                            asyncio.shield(nudge_task),
-                            timeout=remaining,
-                        )
-                    except asyncio.TimeoutError:
-                        # The shielded nudge keeps running so it can restore the
-                        # original app, while this poll honors wait_timeout.
-                        return GetTestJobResponse(**response)
-                    if nudged:
-                        logger.info(f"Test job {job_id} nudge completed")
 
             # Check timeout
             remaining = deadline - asyncio.get_running_loop().time()
@@ -524,45 +356,94 @@ async def get_test_job(
     # No wait_timeout - return immediately (original behavior)
     response = await _fetch_status()
     if not isinstance(response, dict):
-        _forget_job_nudge_state(nudge_key)
         return MCPResponse(success=False, error=str(response))
     if not response.get("success", True):
-        _forget_job_nudge_state(nudge_key)
         return MCPResponse(**response)
 
-    # Fire-and-forget nudge check: even without wait_timeout, clients may poll
-    # externally. Check if Unity needs a nudge on every call so stalls get
-    # detected regardless of polling style.
-    data = response.get("data", {})
-    if _is_physical_terminal(data):
-        _forget_job_nudge_state(nudge_key)
-        return GetTestJobResponse(**response)
-
-    status = _physical_nudge_status(data)
-    if status == "running":
-        progress = data.get("progress") or {}
-        editor_is_focused = progress.get("editor_is_focused", True)
-        last_update_unix_ms = data.get("last_update_unix_ms")
-        current_time_ms = int(time.time() * 1000)
-        if should_nudge(
-            status=status,
-            editor_is_focused=editor_is_focused,
-            last_update_unix_ms=last_update_unix_ms,
-            current_time_ms=current_time_ms,
-        ):
-            logger.info(f"Test job {job_id} appears stalled (unfocused Unity), scheduling background nudge...")
-            project_path, lookup_attempted = await _get_job_project_path(
-                nudge_key,
-                unity_instance,
-                user_id,
-            )
-            if project_path is None:
-                if lookup_attempted:
-                    logger.warning(
-                        "Skipping focus nudge for TestRunner job %s because its Unity project identity is unavailable",
-                        job_id,
-                    )
-            else:
-                _get_or_start_job_nudge(nudge_key, project_path)
-
     return GetTestJobResponse(**response)
+
+
+@mcp_for_unity_tool(
+    group="testing",
+    unity_target="get_test_job",
+    description=(
+        "Explicitly and temporarily focuses the exact local Unity process for an active test job. "
+        "Polling never invokes this tool automatically."
+    ),
+    annotations=ToolAnnotations(
+        title="Nudge Test Job",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=False,
+    ),
+)
+async def nudge_test_job(
+    ctx: Context,
+    job_id: Annotated[str, "Active job id returned by run_tests"],
+    focus_duration: Annotated[
+        float,
+        "Seconds to keep the exact Unity process focused before restoring the original app (0.1-30).",
+    ] = 1.0,
+) -> MCPResponse:
+    if not job_id.strip():
+        return MCPResponse(success=False, error="job_id is required")
+    if focus_duration < 0.1 or focus_duration > 30:
+        return MCPResponse(success=False, error="focus_duration must be between 0.1 and 30 seconds")
+    if config.http_remote_hosted:
+        return MCPResponse(
+            success=False,
+            error="nudge_test_job is unavailable when HTTP remote hosting is enabled",
+        )
+
+    unity_instance = await get_unity_instance_from_context(ctx)
+    user_id = await get_unity_instance_from_context(ctx, key="user_id")
+    response = await unity_transport.send_with_unity_instance(
+        async_send_command_with_retry,
+        unity_instance,
+        "get_test_job",
+        {"job_id": job_id},
+    )
+    if not isinstance(response, dict):
+        return MCPResponse(success=False, error=str(response))
+    if not response.get("success", True):
+        return MCPResponse(**response)
+    data = response.get("data") or {}
+    if data.get("job_id") != job_id:
+        return MCPResponse(success=False, error="Unity returned a mismatched test job identity")
+    if _is_physical_terminal(data):
+        return MCPResponse(success=False, error="test job is already physically terminal")
+
+    target, error = await _resolve_focus_target(unity_instance, user_id)
+    if target is None:
+        return MCPResponse(success=False, error=error or "exact local Unity identity is unavailable")
+
+    nudge_result = await nudge_unity_focus(
+        target,
+        focus_duration_s=focus_duration,
+        force=True,
+        return_result=True,
+    )
+    if isinstance(nudge_result, bool):
+        outcome = "completed" if nudge_result else "not_performed"
+        performed = nudge_result
+        reason = None if performed else "Unity focus nudge was not performed"
+    else:
+        outcome = nudge_result.outcome
+        performed = nudge_result.performed
+        reason = nudge_result.reason
+
+    success = outcome == "completed" and performed
+    return MCPResponse(
+        success=success,
+        message="Exact Unity focus nudge completed" if success else None,
+        error=None if success else (reason or f"Unity focus nudge ended with {outcome}"),
+        data={
+            "job_id": job_id,
+            "session_id": target.session_id,
+            "process_id": target.process_id,
+            "project_root": target.project_root,
+            "outcome": outcome,
+            "performed": performed,
+        },
+    )

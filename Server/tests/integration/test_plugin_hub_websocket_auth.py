@@ -55,6 +55,32 @@ def _make_hub():
     return PluginHub(scope, receive=AsyncMock(), send=AsyncMock())
 
 
+@pytest.mark.asyncio
+async def test_websocket_registration_persists_pid_path_and_peer(monkeypatch):
+    monkeypatch.setattr(config, "http_remote_hosted", False)
+    registry = PluginRegistry()
+    PluginHub.configure(registry, asyncio.get_running_loop())
+    ws = _make_mock_websocket()
+    ws.client = SimpleNamespace(host="127.0.0.1", port=51234)
+    hub = _make_hub()
+
+    await hub.on_receive(ws, {
+        "type": "register",
+        "project_name": "ExactProject",
+        "project_hash": "hash-exact",
+        "unity_version": "2022.3",
+        "project_path": "/workspace/ExactProject",
+        "process_id": 4242,
+    })
+
+    sessions = await registry.list_sessions()
+    assert len(sessions) == 1
+    session = next(iter(sessions.values()))
+    assert session.process_id == 4242
+    assert session.project_path == "/workspace/ExactProject"
+    assert session.peer_host == "127.0.0.1"
+
+
 def _init_api_key_service(validate_result=None):
     """Initialize ApiKeyService with a mocked validate method."""
     svc = ApiKeyService(validation_url="https://auth.example.com/validate")

@@ -132,11 +132,11 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                 string normalized = dataPath.TrimEnd('/', '\\');
                 if (string.Equals(System.IO.Path.GetFileName(normalized), "Assets", StringComparison.Ordinal))
                 {
-                    _projectPath = System.IO.Path.GetDirectoryName(normalized) ?? normalized;
+                    _projectPath = System.IO.Path.GetFullPath(System.IO.Path.GetDirectoryName(normalized) ?? normalized);
                 }
                 else
                 {
-                    _projectPath = normalized;  // Fallback if path doesn't end with Assets
+                    _projectPath = System.IO.Path.GetFullPath(normalized);  // Fallback if path doesn't end with Assets
                 }
             }
 
@@ -733,17 +733,23 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
 
         private async Task SendRegisterAsync(CancellationToken token)
         {
-            var registerPayload = new JObject
+            await SendJsonAsync(BuildRegisterPayload(), token).ConfigureAwait(false);
+        }
+
+        private JObject BuildRegisterPayload()
+        {
+            return new JObject
             {
                 ["type"] = "register",
                 // session_id is now server-authoritative; omitted here or sent as null
                 ["project_name"] = _projectName,
                 ["project_hash"] = _projectHash,
                 ["unity_version"] = _unityVersion,
-                ["project_path"] = _projectPath
+                ["project_path"] = string.IsNullOrWhiteSpace(_projectPath)
+                    ? null
+                    : Path.GetFullPath(_projectPath),
+                ["process_id"] = System.Diagnostics.Process.GetCurrentProcess().Id
             };
-
-            await SendJsonAsync(registerPayload, token).ConfigureAwait(false);
         }
 
         private Task SendPongAsync(CancellationToken token)

@@ -438,6 +438,9 @@ class PluginHub(WebSocketEndpoint):
         project_hash = payload.project_hash
         unity_version = payload.unity_version
         project_path = payload.project_path
+        process_id = payload.process_id
+        client = getattr(websocket, "client", None)
+        peer_host = getattr(client, "host", None)
 
         if not project_hash:
             await websocket.close(code=4400)
@@ -452,7 +455,16 @@ class PluginHub(WebSocketEndpoint):
         response = RegisteredMessage(session_id=session_id)
         await websocket.send_json(response.model_dump())
 
-        session, evicted_session_id = await registry.register(session_id, project_name, project_hash, unity_version, project_path, user_id=user_id)
+        session, evicted_session_id = await registry.register(
+            session_id,
+            project_name,
+            project_hash,
+            unity_version,
+            project_path,
+            user_id=user_id,
+            process_id=process_id,
+            peer_host=peer_host,
+        )
         evicted_ws = None
         async with lock:
             # Clean up the evicted session's connection, ping loop, and pending commands

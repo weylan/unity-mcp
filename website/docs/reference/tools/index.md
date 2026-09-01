@@ -78,8 +78,9 @@ ScriptableObject management
 
 ## `testing` &nbsp; (4 tools)
 Test runner & async test jobs
-- **[`get_test_job`](./testing/get_test_job.md)** — Polls an async Unity test job by job_id.
+- **[`get_test_job`](./testing/get_test_job.md)** — Observationally polls an async Unity test job without changing focus or lifecycle state.
 - **[`manage_playmode_test`](./testing/manage_playmode_test.md)** — Run cancellable Play Mode waits and deterministic action sequences. wait/run_sequence return a job_id and are polled through status.
+- **[`nudge_test_job`](./testing/nudge_test_job.md)** — Explicitly nudges one exact local Unity process for an active test job.
 - **[`run_tests`](./testing/run_tests.md)** — Starts a Unity test run asynchronously and returns a job_id immediately.
 - **[`simulate_input`](./testing/simulate_input.md)** — Inject deterministic input while the Unity Editor is in Play Mode.
 
@@ -92,4 +93,3 @@ Visual effects – VFX Graph, shaders, procedural textures
 - **[`manage_shader`](./vfx/manage_shader.md)** — Manages shader scripts in Unity (create, read, update, delete).
 - **[`manage_texture`](./vfx/manage_texture.md)** — Procedural texture generation for Unity.
 - **[`manage_vfx`](./vfx/manage_vfx.md)** — Manage Unity VFX components (ParticleSystem, VisualEffect, LineRenderer, TrailRenderer).
-

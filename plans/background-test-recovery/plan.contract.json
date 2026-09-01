@@ -1,0 +1,115 @@
+{
+  "schema_version": 2,
+  "lifecycle_state": "active",
+  "task_type": "bugfix",
+  "scope": {
+    "revision": 4,
+    "revision_note": "Close delivery review gap: include the release-generated MCPForUnity/package.json artifact and pin isolated headless execution for the eight C# exact tests without changing the existing release implementation.",
+    "paths": [
+      {"path":"plans/background-test-recovery/plan.md","change":{"kind":"add","note":"Add repository-local execution plan."}},
+      {"path":"plans/background-test-recovery/plan.contract.json","change":{"kind":"add","note":"Add schema-v2 machine contract."}},
+      {"path":"plans/background-test-recovery/todo.md","change":{"kind":"add","note":"Track lifecycle and transport work."}},
+      {"path":"plans/background-test-recovery/context.md","change":{"kind":"add","note":"Record evidence and design."}},
+      {"path":"plans/background-test-recovery/prompt.md","change":{"kind":"add","note":"Add self-contained prompt."}},
+      {"path":"MCPForUnity/package.json","change":{"kind":"modify","note":"Generated and committed only by the existing make release flow after all implementation tests pass; never hand-edited during GREEN."}},
+      {"path":"MCPForUnity/Editor/Services/TestJobManager.cs","change":{"kind":"modify","note":"Make GetJob observational; add watchdog, V3 migration and queued deadline."}},
+      {"path":"Server/src/services/tools/run_tests.py","change":{"kind":"modify","note":"Remove automatic nudge and add explicit nudge_test_job."}},
+      {"path":"Server/src/utils/focus_nudge.py","change":{"kind":"modify","note":"Validate and focus only supplied PID and project root."}},
+      {"path":"MCPForUnity/Editor/Services/Transport/Transports/WebSocketTransportClient.cs","change":{"kind":"modify","note":"Register process ID and absolute project root."}},
+      {"path":"Server/src/transport/models.py","change":{"kind":"modify","note":"Carry exact WebSocket registration identity."}},
+      {"path":"Server/src/transport/plugin_registry.py","change":{"kind":"modify","note":"Persist PID, project root and peer locality."}},
+      {"path":"Server/src/transport/plugin_hub.py","change":{"kind":"modify","note":"Capture peer and register exact target identity."}},
+      {"path":"MCPForUnity/Editor/Services/Transport/Transports/StdioBridgeHost.cs","change":{"kind":"modify","note":"Include PID and project root in heartbeat."}},
+      {"path":"Server/src/models/models.py","change":{"kind":"modify","note":"Carry exact stdio instance identity."}},
+      {"path":"Server/src/transport/legacy/port_discovery.py","change":{"kind":"modify","note":"Parse exact stdio PID/project identity."}},
+      {"path":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerInitTimeoutTests.cs","change":{"kind":"modify","note":"Add getter and awaiting-watchdog REDs."}},
+      {"path":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs","change":{"kind":"modify","note":"Add queued timeout, rollback, wakeup and migration REDs."}},
+      {"path":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/WebSocketTransportClientTests.cs","change":{"kind":"modify","note":"Prove registration identity."}},
+      {"path":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/StdioBridgeHostHeartbeatTests.cs","change":{"kind":"add","note":"Prove heartbeat identity without starting a host."}},
+      {"path":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/StdioBridgeHostHeartbeatTests.cs.meta","change":{"kind":"add","note":"Add Unity metadata for heartbeat tests."}},
+      {"path":"Server/tests/integration/test_run_tests_async.py","change":{"kind":"modify","note":"Prove getter is observational and nudge is explicit."}},
+      {"path":"Server/tests/test_focus_nudge.py","change":{"kind":"modify","note":"Cover exact targeting on all OSes."}},
+      {"path":"Server/tests/test_tool_annotations.py","change":{"kind":"modify","note":"Register exact nudge annotations."}},
+      {"path":"Server/tests/test_transport_characterization.py","change":{"kind":"modify","note":"Characterize transport identity fields."}},
+      {"path":"Server/tests/integration/test_plugin_hub_websocket_auth.py","change":{"kind":"modify","note":"Prove peer/PID/path registration."}},
+      {"path":"Server/tests/test_models_characterization.py","change":{"kind":"modify","note":"Cover expanded instance models."}},
+      {"path":"Server/tests/test_background_test_recovery_contract.js","change":{"kind":"add","note":"Provide cross-platform Node exact-RED wrappers for Python behavior tests."}},
+      {"path":"website/docs/reference/tools/testing/get_test_job.md","change":{"kind":"modify","note":"Document observational polling."}},
+      {"path":"website/docs/reference/tools/testing/nudge_test_job.md","change":{"kind":"add","note":"Document explicit focus recovery."}},
+      {"path":"website/docs/reference/tools/testing/index.md","change":{"kind":"modify","note":"Index nudge_test_job."}},
+      {"path":"website/docs/reference/tools/index.md","change":{"kind":"modify","note":"Index nudge_test_job globally."}}
+    ],
+    "context_paths": ["CLAUDE.md","plans/test-runner-job-lifecycle/plan.md","plans/test-runner-job-lifecycle/plan.contract.json","MCPForUnity/Editor/Tools/GetTestJob.cs","Server/src/services/registry/tool_registry.py","Server/src/transport/unity_instance_middleware.py","Makefile","Tools/gameempire_merge_latest.js","Tools/tests/test_gameempire_merge_latest.js"]
+  },
+  "root_cause_gate": {
+    "applicable": true,
+    "trigger": "A read-only polling tool changed OS focus and lifecycle state while a queued job could remain physically owned without independent progress.",
+    "agent": "api_test_design + unity_mcp_red_inventory + three_repo_plan_review",
+    "report_id": "Root Cause Gate #1",
+    "hypotheses": ["Python polling embeds focus recovery.","C# GetJob embeds timeout persistence.","Queued and awaiting phases lack a watchdog.","Transport identity cannot target focus exactly."],
+    "side_effects": ["Polling steals foreground.","Getter frequency changes lifecycle timing.","Persist failure can split memory and durable state.","Name-only focus can target another project or remote host."],
+    "findings": ["Move timeout writes to a persist-first watchdog.","Add strict V3 migration and a fixed 60-second queued deadline derived from original creation time.","Expose focus only through nudge_test_job and revalidate PID/path immediately before OS focus.","Propagate session/PID/path/peer and fail closed.","Cover C# GetJob, WebSocket registry and stdio discovery as independent writers."]
+  },
+  "phase_1_5": {
+    "decision": "required",
+    "trigger_evidence": {
+      "new_manager": [],
+      "new_ui_panel": [],
+      "new_serialized_field": ["Persisted lifecycle V3 adds queued deadline and strict schema version."],
+      "new_event_key": [],
+      "new_inheritance": [],
+      "complex_gate_multi_source": ["Unity lifecycle, Python tools, WebSocket and stdio identity converge on one job."],
+      "complex_gate_authority_barrier": ["Only watchdog writes timeout transitions; only exact local identity may focus."],
+      "complex_gate_side_effect": ["Wrong ordering can release an owner, overwrite durable state or focus the wrong process."]
+    },
+    "exemption": {"code":"","rationale":"","evidence_refs":[]},
+    "framework_integration_points": ["Use exactly one EditorApplication.update subscription and request QueuePlayerLoopUpdate only while watchdog work remains.","Keep both Python get_test_job and C# TestJobManager.GetJob observational and response-compatible.","Alias nudge_test_job visibility to get_test_job without a C# handler.","Persist WebSocket PID/path/peer in PluginRegistry and parse stdio PID/path in PortDiscovery.","Treat stdio as local but still verify PID and project root."],
+    "planned_files": ["MCPForUnity/Editor/Services/TestJobManager.cs","Server/src/services/tools/run_tests.py","Server/src/utils/focus_nudge.py","MCPForUnity/Editor/Services/Transport/Transports/WebSocketTransportClient.cs","Server/src/transport/plugin_hub.py","MCPForUnity/Editor/Services/Transport/Transports/StdioBridgeHost.cs","MCPForUnity/package.json"],
+    "test_interfaces": ["Controllable lifecycle clock/watchdog, subscription count and persistence seam","Real StartJob to V3 persistence to reload seam with varied init_timeout","Mock command sender and focus executor","WebSocket registration builder and registry lookup","Stdio heartbeat builder and PortDiscovery parser","Platform command fixtures reached through production focus_nudge platform selection","Cross-platform Node wrapper whose single local mapping table drives both --list-tests-json and execution of the mapped exact pytest node IDs"],
+    "unknowns": ["Real AXRaise success is an explicitly authorized environment check, not a correctness dependency."],
+    "conflict_precheck": ["No non-done unity-mcp plan declares these files.","Do not rewrite completed test-runner-job-lifecycle history."]
+  },
+  "p10": {
+    "applicable": true,
+    "state_machine": true,
+    "ui_timing": false,
+    "business_invariants": [
+      {"id":"BI-MCP-OBSERVATIONAL-GET","statement":"get_test_job performs no lifecycle persistence, nudge-state allocation or OS focus; repeated reads of unchanged state are equivalent.","state_fields":["TestJob.snapshot","NudgeState","OS.frontmost"]},
+      {"id":"BI-MCP-WATCHDOG-DURABILITY","statement":"The watchdog alone transitions expired awaiting or ownerless queued jobs; it critical-persists before release, fully rolls back on failure, has exactly one update subscription after init/reload/reset, and requests a PlayerLoop wakeup only while work remains.","state_fields":["TestJob.phase","TestJob.status","PersistedState.current_job_id","PersistedState.physical_owner","AttachedLock","Watchdog.subscription_count","Watchdog.player_loop_requested"]},
+      {"id":"BI-MCP-V3-MIGRATION","statement":"V3 stores QueuedDeadlineUnixMs = CreatedUnixMs + 60000 independently from init_timeout; exact V2 uses original CreatedUnixMs for this deadline, V1 migrates conservatively, and an unknown future schema preserves the original raw snapshot, enters restore-blocked with the fence retained, never overwrites it and never dispatches or starts a replacement run.","state_fields":["PersistedState.schema_version","PersistedState.raw_snapshot","PersistedState.physical_owner","TestJob.created_unix_ms","TestJob.queued_deadline_unix_ms","TestJob.phase","RestoreState.blocked"]},
+      {"id":"BI-MCP-EXPLICIT-FOCUS","statement":"Only nudge_test_job may focus; exact user/session/PID/canonical project root/local peer is required, and invalid identity fails before OS mutation.","state_fields":["UnitySessionId","process_id","project_root","peer","NudgeState"]},
+      {"id":"BI-MCP-TRANSPORT-IDENTITY","statement":"WebSocket and stdio carry current Unity PID and absolute project root; WebSocket records peer locality.","state_fields":["UnityInstanceInfo.process_id","UnityInstanceInfo.project_path","UnityInstanceInfo.peer_host","StdioHeartbeat.process_id"]}
+    ],
+    "write_entry_table": [
+      {"id":"WE-MCP-STARTJOB-V3","invariant_refs":["BI-MCP-V3-MIGRATION"],"source_path":"MCPForUnity/Editor/Services/TestJobManager.cs","entry":"StartJob creates a queued job and PersistToSessionState writes V3 with QueuedDeadlineUnixMs derived only from CreatedUnixMs","writes":["PersistedState.schema_version","TestJob.created_unix_ms","TestJob.queued_deadline_unix_ms","TestJob.phase"],"red_test_method":"MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.StartJob_PersistsQueuedDeadlineFromCreatedTimeIndependentOfInitTimeoutAndReloadsV3","red_test_runtime":"csharp","red_test_file":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs"},
+      {"id":"WE-MCP-PYTHON-GET","invariant_refs":["BI-MCP-OBSERVATIONAL-GET"],"source_path":"Server/src/services/tools/run_tests.py","entry":"get_test_job projects one response without scheduling focus","writes":["TestJob.snapshot"],"red_test_method":"UnityMcp.Server.GetTestJob.IsObservationalForStalledUnfocusedJob","red_test_runtime":"node","red_test_file":"Server/tests/test_background_test_recovery_contract.js"},
+      {"id":"WE-MCP-CSHARP-GET","invariant_refs":["BI-MCP-OBSERVATIONAL-GET"],"source_path":"MCPForUnity/Editor/Services/TestJobManager.cs","entry":"TestJobManager.GetJob returns a snapshot without timeout persistence or lifecycle mutation","writes":["TestJob.snapshot"],"red_test_method":"MCPForUnityTests.Editor.Services.TestJobManagerInitTimeoutTests.GetTestJobHandler_AfterDeadline_IsReadOnlyUntilWatchdogTicks","red_test_runtime":"csharp","red_test_file":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerInitTimeoutTests.cs"},
+      {"id":"WE-MCP-WATCHDOG-AWAITING","invariant_refs":["BI-MCP-WATCHDOG-DURABILITY"],"source_path":"MCPForUnity/Editor/Services/TestJobManager.cs","entry":"LifecycleWatchdogTick adjudicates AwaitingRunStarted deadline persist-first","writes":["TestJob.status","TestJob.phase","PersistedState.physical_owner","AttachedLock"],"red_test_method":"MCPForUnityTests.Editor.Services.TestJobManagerInitTimeoutTests.LifecycleWatchdog_AwaitingTimeout_PersistFirstRollbackAndRetainsPhysicalOwner","red_test_runtime":"csharp","red_test_file":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerInitTimeoutTests.cs"},
+      {"id":"WE-MCP-WATCHDOG-QUEUED","invariant_refs":["BI-MCP-WATCHDOG-DURABILITY","BI-MCP-V3-MIGRATION"],"source_path":"MCPForUnity/Editor/Services/TestJobManager.cs","entry":"LifecycleWatchdogTick terminates an expired ownerless Queued job transactionally and makes late dispatch a no-op","writes":["TestJob.status","TestJob.phase","PersistedState.current_job_id","PersistedState.physical_owner","AttachedLock","TestJob.queued_deadline_unix_ms"],"red_test_method":"MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.QueuedWatchdog_ExpiredOwnerlessJob_PersistFirstRollbackAndLateDispatchNoOp","red_test_runtime":"csharp","red_test_file":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs"},
+      {"id":"WE-MCP-WATCHDOG-SCHEDULER","invariant_refs":["BI-MCP-WATCHDOG-DURABILITY"],"source_path":"MCPForUnity/Editor/Services/TestJobManager.cs","entry":"Watchdog lifecycle registration remains singular and wakeups remain conditional","writes":["Watchdog.subscription_count","Watchdog.player_loop_requested"],"red_test_method":"MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.LifecycleWatchdog_SubscriptionAndPlayerLoopWakeup_RemainSingleAndConditional","red_test_runtime":"csharp","red_test_file":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs"},
+      {"id":"WE-MCP-RESTORE-V3","invariant_refs":["BI-MCP-V3-MIGRATION","BI-MCP-WATCHDOG-DURABILITY"],"source_path":"MCPForUnity/Editor/Services/TestJobManager.cs","entry":"RestorePersistedState handles exact V3/V2/V1 and blocks unknown future schemas without replay or overwrite","writes":["PersistedState.schema_version","PersistedState.raw_snapshot","PersistedState.physical_owner","TestJob.created_unix_ms","TestJob.queued_deadline_unix_ms","TestJob.phase","RestoreState.blocked"],"red_test_method":"MCPForUnityTests.Editor.Services.TestJobManagerLifecycleTests.RestoreLifecycle_V3V2V1AndFutureSchema_AreStrictAndNeverReplayUnsafeWork","red_test_runtime":"csharp","red_test_file":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/TestJobManagerLifecycleTests.cs"},
+      {"id":"WE-MCP-NUDGE","invariant_refs":["BI-MCP-OBSERVATIONAL-GET","BI-MCP-EXPLICIT-FOCUS","BI-MCP-TRANSPORT-IDENTITY"],"source_path":"Server/src/services/tools/run_tests.py","entry":"nudge_test_job crosses production focus_nudge platform selection, then immediately revalidates the supplied PID command line and canonical project root before one OS focus attempt","writes":["NudgeState","OS.frontmost","process_id","project_root","peer"],"red_test_method":"UnityMcp.Server.NudgeTestJob.UsesExactLocalIdentity","red_test_runtime":"node","red_test_file":"Server/tests/test_background_test_recovery_contract.js"},
+      {"id":"WE-MCP-WEBSOCKET-IDENTITY","invariant_refs":["BI-MCP-TRANSPORT-IDENTITY"],"source_path":"MCPForUnity/Editor/Services/Transport/Transports/WebSocketTransportClient.cs","entry":"BuildRegisterPayload records current process and project","writes":["UnityInstanceInfo.process_id","UnityInstanceInfo.project_path"],"red_test_method":"MCPForUnityTests.Editor.Services.WebSocketTransportClientTests.BuildRegisterPayload_IncludesExactProjectRootAndCurrentProcessId","red_test_runtime":"csharp","red_test_file":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/WebSocketTransportClientTests.cs"},
+      {"id":"WE-MCP-WEBSOCKET-REGISTRY","invariant_refs":["BI-MCP-TRANSPORT-IDENTITY"],"source_path":"Server/src/transport/plugin_hub.py","entry":"_handle_register passes PID, canonical project path and peer locality into PluginRegistry.register","writes":["UnityInstanceInfo.process_id","UnityInstanceInfo.project_path","UnityInstanceInfo.peer_host"],"red_test_method":"UnityMcp.Server.WebSocketRegistration.PersistsPidPathAndPeer","red_test_runtime":"node","red_test_file":"Server/tests/test_background_test_recovery_contract.js"},
+      {"id":"WE-MCP-STDIO-IDENTITY","invariant_refs":["BI-MCP-TRANSPORT-IDENTITY"],"source_path":"MCPForUnity/Editor/Services/Transport/Transports/StdioBridgeHost.cs","entry":"BuildHeartbeatPayload records current process and project","writes":["StdioHeartbeat.process_id","UnityInstanceInfo.project_path"],"red_test_method":"MCPForUnityTests.Editor.Services.StdioBridgeHostHeartbeatTests.BuildHeartbeatPayload_IncludesAssetsPathAndCurrentProcessId","red_test_runtime":"csharp","red_test_file":"TestProjects/UnityMCPTests/Assets/Tests/EditMode/Services/StdioBridgeHostHeartbeatTests.cs"},
+      {"id":"WE-MCP-STDIO-DISCOVERY","invariant_refs":["BI-MCP-TRANSPORT-IDENTITY"],"source_path":"Server/src/transport/legacy/port_discovery.py","entry":"PortDiscovery parses and preserves heartbeat PID plus canonical project identity","writes":["StdioHeartbeat.process_id","UnityInstanceInfo.project_path"],"red_test_method":"UnityMcp.Server.StdioDiscovery.PreservesPidAndProjectIdentity","red_test_runtime":"node","red_test_file":"Server/tests/test_background_test_recovery_contract.js"}
+    ],
+    "phase_table": [
+      {"id":"PH-MCP-QUEUED","phase":"Queued","meaning":"Persisted without physical owner and with queued deadline.","exits":"Dispatch CAS or watchdog terminal."},
+      {"id":"PH-MCP-DISPATCHING","phase":"Dispatching","meaning":"Physical owner is persisted and Execute may be in progress.","exits":"Execute return, failure or physical terminal."},
+      {"id":"PH-MCP-AWAITING","phase":"AwaitingRunStarted","meaning":"Execute returned and initialization deadline is active.","exits":"RunStarted, watchdog logical failure or physical terminal."},
+      {"id":"PH-MCP-RUNNING","phase":"Running","meaning":"Matching RunStarted arrived and owner is retained.","exits":"Matching durably persisted terminal."},
+      {"id":"PH-MCP-RESTORE-BLOCKED","phase":"RestoreBlocked","meaning":"An unknown future schema is preserved byte-for-byte while its fence remains retained.","exits":"Only explicit compatible recovery after code upgrade; never automatic replay."},
+      {"id":"PH-MCP-TERMINAL","phase":"Terminal","meaning":"Terminal is durable and no physical owner remains.","exits":"None."}
+    ],
+    "ui_owners": []
+  },
+  "case_lookup": {
+    "scope_revision": 4,
+    "explicit_user_terms": ["Unity前台","抢占操作窗口","get_test_job","权限没有问题"],
+    "context_hash": "eb3350e027fae729c6d92b7eef40b43b899e4f28184cddafec1ba08a13df3993",
+    "catalog_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "candidates": []
+  },
+  "environment_refs": []
+}

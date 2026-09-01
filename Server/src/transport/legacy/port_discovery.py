@@ -311,6 +311,7 @@ class PortDiscovery:
                     # May not be available in current version
                     unity_version=data.get('unity_version'),
                     project_scoped_tools=data.get('project_scoped_tools', False),
+                    process_id=data.get('process_id') if isinstance(data.get('process_id'), int) else None,
                 )
 
                 instances_by_port[port] = (instance, freshness)

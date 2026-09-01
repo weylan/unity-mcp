@@ -101,6 +101,7 @@ namespace MCPForUnityTests.Editor.Services
         public void TearDown()
         {
             TestJobManager.PersistSnapshotForTests = null;
+            TestJobManager.QueuePlayerLoopUpdateForTests = null;
             TestJobManager.DelayCallSchedulerForTests = null;
             TestJobManager.UnixTimeMillisecondsForTests = null;
             TestJobManager.ResetForTests(clearSessionState: true);
@@ -194,6 +195,7 @@ namespace MCPForUnityTests.Editor.Services
             Assert.AreEqual(TestJobPhase.AwaitingRunStarted, TestJobManager.GetJob(jobId).Phase);
 
             _now += 101;
+            Assert.IsTrue(TestJobManager.LifecycleWatchdogTickForTests());
             TestJob timedOut = TestJobManager.GetJob(jobId);
             Assert.AreEqual(TestJobStatus.Failed, timedOut.Status);
             Assert.AreEqual(TestJobPhase.AwaitingRunStarted, timedOut.Phase);
@@ -289,6 +291,7 @@ namespace MCPForUnityTests.Editor.Services
             TestJobIdentity owner = TestJobManager.PhysicalOwnerForTests.Value;
 
             _now += 101;
+            Assert.IsTrue(TestJobManager.LifecycleWatchdogTickForTests());
             long logicalFinished = TestJobManager.GetJob(jobId).FinishedUnixMs.Value;
             _now += 500;
             Assert.IsTrue(TestJobManager.FinalizePhysicalOwnerFromRunFinished(owner, null));
@@ -312,6 +315,220 @@ namespace MCPForUnityTests.Editor.Services
             }
 
             Assert.LessOrEqual(TestJobManager.JobCountForTests, 10);
+        }
+
+        [Test]
+        public void StartJob_PersistsQueuedDeadlineFromCreatedTimeIndependentOfInitTimeoutAndReloadsV3()
+        {
+            foreach (long initTimeout in new[] { 100L, 90_000L })
+            {
+                TestJobManager.ResetForTests(clearSessionState: true);
+                _scheduled.Clear();
+                _now += 100_000;
+                TestJobManager.UnixTimeMillisecondsForTests = () => _now;
+                TestJobManager.DelayCallSchedulerForTests = action => _scheduled.Add(action);
+
+                string persisted = null;
+                TestJobManager.PersistSnapshotForTests = json =>
+                {
+                    persisted = json;
+                    return true;
+                };
+                string jobId = TestJobManager.StartJob(TestMode.EditMode, Filter(), initTimeout);
+                TestJob queued = TestJobManager.GetJob(jobId);
+
+                Assert.AreEqual(_now, queued.CreatedUnixMs);
+                Assert.AreEqual(queued.CreatedUnixMs + 60_000, queued.QueuedDeadlineUnixMs);
+                StringAssert.Contains("\"schema_version\":3", persisted);
+                StringAssert.Contains($"\"created_unix_ms\":{queued.CreatedUnixMs}", persisted);
+                StringAssert.Contains($"\"queued_deadline_unix_ms\":{queued.QueuedDeadlineUnixMs}", persisted);
+
+                TestJobManager.PersistSnapshotForTests = null;
+                TestJobManager.ClearInMemoryForTests();
+                _scheduled.Clear();
+                TestJobManager.EnsureInitialized();
+                TestJob restored = TestJobManager.GetJob(jobId);
+                Assert.AreEqual(queued.CreatedUnixMs, restored.CreatedUnixMs);
+                Assert.AreEqual(queued.QueuedDeadlineUnixMs, restored.QueuedDeadlineUnixMs);
+                Assert.AreEqual(initTimeout, restored.InitTimeoutMs);
+            }
+        }
+
+        [Test]
+        public void QueuedWatchdog_ExpiredOwnerlessJob_PersistFirstRollbackAndLateDispatchNoOp()
+        {
+            string jobId = TestJobManager.StartJob(TestMode.EditMode, Filter(), 250_000);
+            _now += 60_001;
+
+            TestJobManager.PersistSnapshotForTests = _ => false;
+            LogAssert.Expect(LogType.Error,
+                new Regex("Critical lifecycle persistence failed; retaining the prior physical fence\\."));
+            Assert.IsFalse(TestJobManager.LifecycleWatchdogTickForTests());
+            Assert.AreEqual(TestJobPhase.Queued, TestJobManager.GetJob(jobId).Phase);
+            Assert.AreEqual(jobId, TestJobManager.CurrentJobId);
+            Assert.IsFalse(TestJobManager.PhysicalOwnerForTests.HasValue);
+
+            TestJobManager.PersistSnapshotForTests = _ => true;
+            Assert.IsTrue(TestJobManager.LifecycleWatchdogTickForTests());
+            TestJob terminal = TestJobManager.GetJob(jobId);
+            Assert.AreEqual(TestJobStatus.Failed, terminal.Status);
+            Assert.AreEqual(TestJobPhase.Terminal, terminal.Phase);
+            Assert.IsNull(TestJobManager.CurrentJobId);
+            Assert.IsFalse(TestJobManager.PhysicalOwnerForTests.HasValue);
+            Assert.IsFalse(TestJobManager.TryDispatchQueuedJobForTests(jobId),
+                "A delayCall captured before timeout must not replay Execute after the durable terminal.");
+            Assert.AreEqual(0, _runner.InvocationCount);
+        }
+
+        [Test]
+        public void LifecycleWatchdog_SubscriptionAndPlayerLoopWakeup_RemainSingleAndConditional()
+        {
+            TestJobManager.EnsureInitialized();
+            TestJobManager.EnsureLifecycleWatchdogForTests();
+            TestJobManager.EnsureLifecycleWatchdogForTests();
+            Assert.AreEqual(1, TestJobManager.WatchdogSubscriptionCountForTests);
+
+            int wakeups = 0;
+            TestJobManager.QueuePlayerLoopUpdateForTests = () => wakeups++;
+            TestJobManager.LifecycleWatchdogUpdateForTests();
+            Assert.AreEqual(0, wakeups, "Idle watchdog updates must not force the Editor loop.");
+
+            string jobId = TestJobManager.StartJob(TestMode.EditMode, Filter(), 500_000);
+            TestJobManager.LifecycleWatchdogUpdateForTests();
+            Assert.AreEqual(1, wakeups, "A live queued deadline needs one conditional wakeup.");
+
+            _now += 60_001;
+            TestJobManager.LifecycleWatchdogUpdateForTests();
+            Assert.AreEqual(1, wakeups, "A terminal watchdog result has no remaining work to wake.");
+            Assert.AreEqual(TestJobPhase.Terminal, TestJobManager.GetJob(jobId).Phase);
+            Assert.AreEqual(1, TestJobManager.WatchdogSubscriptionCountForTests);
+        }
+
+        [Test]
+        public void RestoreLifecycle_V3V2V1AndFutureSchema_AreStrictAndNeverReplayUnsafeWork()
+        {
+            const string v3 = "{\"schema_version\":3,\"current_job_id\":\"v3\",\"physical_owner\":null,\"next_generation\":2,\"jobs\":[{\"job_id\":\"v3\",\"generation\":1,\"status\":\"running\",\"phase\":\"queued\",\"mode\":\"EditMode\",\"created_unix_ms\":1000,\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"last_update_unix_ms\":1000}]}";
+            ReloadPersistedSnapshot(v3, storageVersion: 3);
+            Assert.AreEqual(61_000, TestJobManager.GetJob("v3").QueuedDeadlineUnixMs);
+
+            const string runningTerminal = "{\"schema_version\":3,\"current_job_id\":null,\"physical_owner\":null,\"next_generation\":2,\"jobs\":[{\"job_id\":\"running-terminal\",\"generation\":1,\"status\":\"running\",\"phase\":\"terminal\",\"mode\":\"EditMode\",\"created_unix_ms\":1000,\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"last_update_unix_ms\":1000}]}";
+            AssertV3RestoreBlocked(runningTerminal,
+                "terminal phase requires a terminal logical status");
+
+            const string queuedWithOwner = "{\"schema_version\":3,\"current_job_id\":\"queued-owner\",\"physical_owner\":{\"job_id\":\"queued-owner\",\"generation\":1},\"next_generation\":2,\"jobs\":[{\"job_id\":\"queued-owner\",\"generation\":1,\"status\":\"running\",\"phase\":\"queued\",\"mode\":\"EditMode\",\"created_unix_ms\":1000,\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"last_update_unix_ms\":1000}]}";
+            AssertV3RestoreBlocked(queuedWithOwner,
+                "queued phase cannot have a physical owner");
+
+            const string ownerWithoutCurrent = "{\"schema_version\":3,\"current_job_id\":null,\"physical_owner\":{\"job_id\":\"owner-without-current\",\"generation\":1},\"next_generation\":2,\"jobs\":[{\"job_id\":\"owner-without-current\",\"generation\":1,\"status\":\"running\",\"phase\":\"running\",\"mode\":\"EditMode\",\"created_unix_ms\":1000,\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"last_update_unix_ms\":1000}]}";
+            AssertV3RestoreBlocked(ownerWithoutCurrent,
+                "physical owner requires matching current_job_id");
+
+            const string runningWithoutOwner = "{\"schema_version\":3,\"current_job_id\":\"running-ownerless\",\"physical_owner\":null,\"next_generation\":2,\"jobs\":[{\"job_id\":\"running-ownerless\",\"generation\":1,\"status\":\"running\",\"phase\":\"running\",\"mode\":\"EditMode\",\"created_unix_ms\":1000,\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"last_update_unix_ms\":1000}]}";
+            AssertV3RestoreBlocked(runningWithoutOwner,
+                "physical phase requires matching physical_owner");
+
+            const string orphanedQueued = "{\"schema_version\":3,\"current_job_id\":null,\"physical_owner\":null,\"next_generation\":2,\"jobs\":[{\"job_id\":\"orphaned-queued\",\"generation\":1,\"status\":\"running\",\"phase\":\"queued\",\"mode\":\"EditMode\",\"created_unix_ms\":1000,\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"last_update_unix_ms\":1000}]}";
+            AssertV3RestoreBlocked(orphanedQueued,
+                "nonterminal phase requires current_job_id");
+
+            const string failedQueued = "{\"schema_version\":3,\"current_job_id\":\"failed-queued\",\"physical_owner\":null,\"next_generation\":2,\"jobs\":[{\"job_id\":\"failed-queued\",\"generation\":1,\"status\":\"failed\",\"phase\":\"queued\",\"mode\":\"EditMode\",\"created_unix_ms\":1000,\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"last_update_unix_ms\":1000}]}";
+            AssertV3RestoreBlocked(failedQueued,
+                "queued phase requires running logical status");
+
+            const string failedAwaitingOwner = "{\"schema_version\":3,\"current_job_id\":\"failed-awaiting\",\"physical_owner\":{\"job_id\":\"failed-awaiting\",\"generation\":1},\"next_generation\":2,\"jobs\":[{\"job_id\":\"failed-awaiting\",\"generation\":1,\"status\":\"failed\",\"phase\":\"awaiting_run_started\",\"mode\":\"EditMode\",\"created_unix_ms\":1000,\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"awaiting_run_started_since_unix_ms\":1100,\"finished_unix_ms\":1200,\"last_update_unix_ms\":1200}]}";
+            ReloadPersistedSnapshot(failedAwaitingOwner, storageVersion: 3);
+            Assert.IsFalse(TestJobManager.IsRestoreBlockedForTests);
+            Assert.AreEqual(TestJobStatus.Failed, TestJobManager.GetJob("failed-awaiting").Status);
+            Assert.AreEqual(TestJobPhase.AwaitingRunStarted,
+                TestJobManager.GetJob("failed-awaiting").Phase);
+            Assert.AreEqual(new TestJobIdentity("failed-awaiting", 1),
+                TestJobManager.PhysicalOwnerForTests.Value);
+
+            const string succeededRunningOwner = "{\"schema_version\":3,\"current_job_id\":\"succeeded-running\",\"physical_owner\":{\"job_id\":\"succeeded-running\",\"generation\":1},\"next_generation\":2,\"jobs\":[{\"job_id\":\"succeeded-running\",\"generation\":1,\"status\":\"succeeded\",\"phase\":\"running\",\"mode\":\"EditMode\",\"created_unix_ms\":1000,\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"finished_unix_ms\":1200,\"last_update_unix_ms\":1200}]}";
+            ReloadPersistedSnapshot(succeededRunningOwner, storageVersion: 3);
+            Assert.IsFalse(TestJobManager.IsRestoreBlockedForTests);
+            Assert.AreEqual(TestJobStatus.Succeeded,
+                TestJobManager.GetJob("succeeded-running").Status);
+            Assert.AreEqual(TestJobPhase.Running,
+                TestJobManager.GetJob("succeeded-running").Phase);
+            Assert.AreEqual(new TestJobIdentity("succeeded-running", 1),
+                TestJobManager.PhysicalOwnerForTests.Value);
+
+            const string invalidV3 = "{\"schema_version\":3,\"current_job_id\":\"invalid-v3\",\"physical_owner\":null,\"next_generation\":2,\"jobs\":[{\"job_id\":\"invalid-v3\",\"generation\":1,\"status\":\"running\",\"phase\":\"queued\",\"mode\":\"EditMode\",\"queued_deadline_unix_ms\":61000,\"started_unix_ms\":1000,\"last_update_unix_ms\":1000}]}";
+            LogAssert.Expect(LogType.Error,
+                new Regex("Restore blocked to preserve an unreadable lifecycle snapshot: Invalid V3 queued deadline"));
+            ReloadPersistedSnapshot(invalidV3, storageVersion: 3);
+            Assert.IsTrue(TestJobManager.IsRestoreBlockedForTests);
+            Assert.AreEqual(invalidV3, TestJobManager.RestoreBlockedRawSnapshotForTests);
+            Assert.AreEqual(0, _scheduled.Count);
+
+            const string v2 = "{\"schema_version\":2,\"current_job_id\":\"v2\",\"physical_owner\":null,\"next_generation\":2,\"jobs\":[{\"job_id\":\"v2\",\"generation\":1,\"status\":\"running\",\"phase\":\"queued\",\"mode\":\"EditMode\",\"started_unix_ms\":2000,\"last_update_unix_ms\":2000}]}";
+            ReloadPersistedSnapshot(v2, storageVersion: 2, failMigrationPersist: true);
+            Assert.IsTrue(TestJobManager.IsRestoreBlockedForTests);
+            Assert.AreEqual(v2, TestJobManager.RestoreBlockedRawSnapshotForTests);
+            Assert.AreEqual(0, _scheduled.Count, "A failed migration must not replay queued work.");
+            Assert.Throws<InvalidOperationException>(() =>
+                TestJobManager.StartJob(TestMode.EditMode, Filter(), 100));
+
+            ReloadPersistedSnapshot(v2, storageVersion: 2);
+            TestJob migratedV2 = TestJobManager.GetJob("v2");
+            Assert.AreEqual(2_000, migratedV2.CreatedUnixMs);
+            Assert.AreEqual(62_000, migratedV2.QueuedDeadlineUnixMs);
+            StringAssert.Contains("\"schema_version\":3", TestJobManager.LastPersistedSnapshotForTests);
+
+            TestJobManager.ResetForTests(clearSessionState: true);
+            SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+            TestJobManager.SeedLegacyV1StateForTests("v1", TestMode.PlayMode, 3_000);
+            TestJobManager.ClearInMemoryForTests();
+            _scheduled.Clear();
+            TestJobManager.EnsureInitialized();
+            TestJob migratedV1 = TestJobManager.GetJob("v1");
+            Assert.AreEqual(3_000, migratedV1.CreatedUnixMs);
+            Assert.AreEqual(63_000, migratedV1.QueuedDeadlineUnixMs);
+            Assert.AreEqual(TestJobPhase.Running, migratedV1.Phase);
+            Assert.AreEqual(0, _runner.InvocationCount, "Conservative V1 migration must not replay Execute.");
+
+            const string future = "{\"schema_version\":4,\"current_job_id\":\"future\",\"physical_owner\":{\"job_id\":\"future\",\"generation\":9},\"next_generation\":10,\"jobs\":[{\"job_id\":\"future\",\"generation\":9,\"phase\":\"dispatching\"}],\"future_field\":{\"preserve\":true}}";
+            ReloadPersistedSnapshot(future, storageVersion: 3);
+            Assert.IsTrue(TestJobManager.IsRestoreBlockedForTests);
+            Assert.AreEqual(future, TestJobManager.RestoreBlockedRawSnapshotForTests);
+            Assert.AreEqual(new TestJobIdentity("future", 9), TestJobManager.PhysicalOwnerForTests.Value);
+            Assert.AreEqual(0, _scheduled.Count, "Unknown schemas must not dispatch or replay work.");
+            Assert.Throws<InvalidOperationException>(() =>
+                TestJobManager.StartJob(TestMode.EditMode, Filter(), 100));
+            Assert.AreEqual(future, TestJobManager.RestoreBlockedRawSnapshotForTests,
+                "Blocked bytes must remain untouched after rejected work.");
+        }
+
+        private void AssertV3RestoreBlocked(string snapshot, string reason)
+        {
+            LogAssert.Expect(LogType.Error,
+                new Regex($"Restore blocked to preserve an unreadable lifecycle snapshot: {Regex.Escape(reason)}"));
+            ReloadPersistedSnapshot(snapshot, storageVersion: 3);
+            Assert.IsTrue(TestJobManager.IsRestoreBlockedForTests);
+            Assert.AreEqual(snapshot, TestJobManager.RestoreBlockedRawSnapshotForTests);
+            Assert.AreEqual(0, _scheduled.Count);
+        }
+
+        private void ReloadPersistedSnapshot(
+            string json,
+            int storageVersion,
+            bool failMigrationPersist = false)
+        {
+            TestJobManager.ResetForTests(clearSessionState: true);
+            SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+            TestJobManager.SeedPersistedSnapshotForTests(json, storageVersion);
+            TestJobManager.ClearInMemoryForTests();
+            _scheduled.Clear();
+            TestJobManager.DelayCallSchedulerForTests = action => _scheduled.Add(action);
+            TestJobManager.UnixTimeMillisecondsForTests = () => _now;
+            if (failMigrationPersist)
+            {
+                TestJobManager.PersistSnapshotForTests = _ => false;
+                LogAssert.Expect(LogType.Error,
+                    new Regex("Critical lifecycle persistence failed; retaining the prior physical fence\\."));
+            }
+            TestJobManager.EnsureInitialized();
         }
 
         private static TestFilterOptions Filter() => new()

@@ -60,6 +60,8 @@ NON_DESTRUCTIVE = {
     "generate_model",
     "import_model",
     "import_model_file",
+    # Explicit, temporary OS focus change; never called by read-only polling.
+    "nudge_test_job",
 }
 
 AUTO_APPROVABLE = READ_ONLY | NON_DESTRUCTIVE
@@ -156,6 +158,10 @@ def test_mutating_tools_stay_gated(tools):
         f"{ungated}. Either they belong in AUTO_APPROVABLE with a comment saying why, "
         "or the annotation is wrong."
     )
+
+
+def test_nudge_test_job_visibility_follows_get_test_job(tools):
+    assert tools["nudge_test_job"]["unity_target"] == "get_test_job"
 
 
 @pytest.mark.parametrize("name", ["run_tests", "manage_gameobject", "execute_code"])

@@ -1077,48 +1077,49 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                 Directory.CreateDirectory(dir);
                 string filePath = Path.Combine(dir, $"unity-mcp-status-{ComputeProjectHash(Application.dataPath)}.json");
 
-                string projectName = "Unknown";
-                try
-                {
-                    string projectPath = Application.dataPath;
-                    if (!string.IsNullOrEmpty(projectPath))
-                    {
-                        projectPath = projectPath.TrimEnd('/', '\\');
-                        if (projectPath.EndsWith("Assets", StringComparison.OrdinalIgnoreCase))
-                        {
-                            projectPath = projectPath.Substring(0, projectPath.Length - 6).TrimEnd('/', '\\');
-                        }
-                        projectName = Path.GetFileName(projectPath);
-                        if (string.IsNullOrEmpty(projectName))
-                        {
-                            projectName = "Unknown";
-                        }
-                    }
-                }
-                catch { }
-
-                bool projectScopedTools = EditorPrefs.GetBool(
-                    EditorPrefKeys.ProjectScopedToolsLocalHttp,
-                    false // must match McpToolsSection toggle default so UI and heartbeat agree
-                );
-
-                var payload = new
-                {
-                    unity_port = currentUnityPort,
-                    reloading,
-                    reason = reason ?? (reloading ? "reloading" : "ready"),
-                    seq = heartbeatSeq,
-                    project_path = Application.dataPath,
-                    project_name = projectName,
-                    unity_version = Application.unityVersion,
-                    last_heartbeat = DateTime.UtcNow.ToString("O"),
-                    project_scoped_tools = projectScopedTools
-                };
-                File.WriteAllText(filePath, JsonConvert.SerializeObject(payload), new System.Text.UTF8Encoding(false));
+                JObject payload = BuildHeartbeatPayload(reloading, reason);
+                File.WriteAllText(filePath, payload.ToString(Formatting.None), new System.Text.UTF8Encoding(false));
             }
             catch (Exception)
             {
             }
+        }
+
+        private static JObject BuildHeartbeatPayload(bool reloading, string reason)
+        {
+            string projectName = "Unknown";
+            try
+            {
+                string projectPath = Application.dataPath;
+                if (!string.IsNullOrEmpty(projectPath))
+                {
+                    projectPath = projectPath.TrimEnd('/', '\\');
+                    if (projectPath.EndsWith("Assets", StringComparison.OrdinalIgnoreCase))
+                    {
+                        projectPath = projectPath.Substring(0, projectPath.Length - 6).TrimEnd('/', '\\');
+                    }
+                    projectName = Path.GetFileName(projectPath);
+                    if (string.IsNullOrEmpty(projectName)) projectName = "Unknown";
+                }
+            }
+            catch { }
+
+            bool projectScopedTools = EditorPrefs.GetBool(
+                EditorPrefKeys.ProjectScopedToolsLocalHttp,
+                false);
+            return new JObject
+            {
+                ["unity_port"] = currentUnityPort,
+                ["reloading"] = reloading,
+                ["reason"] = reason ?? (reloading ? "reloading" : "ready"),
+                ["seq"] = heartbeatSeq,
+                ["project_path"] = Application.dataPath,
+                ["project_name"] = projectName,
+                ["process_id"] = Process.GetCurrentProcess().Id,
+                ["unity_version"] = Application.unityVersion,
+                ["last_heartbeat"] = DateTime.UtcNow.ToString("O"),
+                ["project_scoped_tools"] = projectScopedTools,
+            };
         }
 
         private static string ComputeProjectHash(string input)

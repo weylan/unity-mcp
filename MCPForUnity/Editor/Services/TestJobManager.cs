@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEditorInternal;
 using UnityEditor.TestTools.TestRunner.Api;
@@ -23,6 +24,7 @@ namespace MCPForUnity.Editor.Services
         Dispatching,
         AwaitingRunStarted,
         Running,
+        RestoreBlocked,
         Terminal
     }
 
@@ -39,6 +41,8 @@ namespace MCPForUnity.Editor.Services
         public TestJobStatus Status { get; set; }
         public TestJobPhase Phase { get; set; }
         public string Mode { get; set; }
+        public long CreatedUnixMs { get; set; }
+        public long QueuedDeadlineUnixMs { get; set; }
         public long StartedUnixMs { get; set; }
         public long? AwaitingRunStartedSinceUnixMs { get; set; }
         public long? FinishedUnixMs { get; set; }
@@ -81,10 +85,12 @@ namespace MCPForUnity.Editor.Services
         private const long MaxInitializationTimeoutMs = 600_000;
         private const int MaxJobsToKeep = 10;
         private const long MinPersistIntervalMs = 1000;
+        private const long QueuedDeadlineBudgetMs = 60_000;
 
         private const string SessionKeyJobsV1 = "MCPForUnity.TestJobsV1";
         private const string SessionKeyCurrentJobIdV1 = "MCPForUnity.CurrentTestJobIdV1";
         private const string SessionKeyJobsV2 = "MCPForUnity.TestJobsV2";
+        private const string SessionKeyJobsV3 = "MCPForUnity.TestJobsV3";
 
         private static readonly object LockObj = new();
         private static readonly Dictionary<string, TestJob> Jobs = new();
@@ -96,13 +102,19 @@ namespace MCPForUnity.Editor.Services
         private static long _lastPersistUnixMs;
         private static bool _initialized;
         private static bool _initializing;
+        private static bool _restoreBlocked;
+        private static string _restoreBlockedRawSnapshot;
+        private static bool _watchdogSubscribed;
+        private static string _lastPersistedSnapshotForTests;
 
         internal static Func<long> UnixTimeMillisecondsForTests { get; set; }
         internal static Action<Action> DelayCallSchedulerForTests { get; set; }
         internal static Func<string, bool> PersistSnapshotForTests { get; set; }
+        internal static Action QueuePlayerLoopUpdateForTests { get; set; }
 
         static TestJobManager()
         {
+            EnsureLifecycleWatchdogSubscribed();
             EnsureInitialized();
         }
 
@@ -120,8 +132,28 @@ namespace MCPForUnity.Editor.Services
             get
             {
                 EnsureInitialized();
-                lock (LockObj) return !string.IsNullOrEmpty(_currentJobId) || _physicalOwner.HasValue;
+                lock (LockObj) return _restoreBlocked || !string.IsNullOrEmpty(_currentJobId) || _physicalOwner.HasValue;
             }
+        }
+
+        internal static int WatchdogSubscriptionCountForTests
+        {
+            get { lock (LockObj) return _watchdogSubscribed ? 1 : 0; }
+        }
+
+        internal static bool IsRestoreBlockedForTests
+        {
+            get { lock (LockObj) return _restoreBlocked; }
+        }
+
+        internal static string RestoreBlockedRawSnapshotForTests
+        {
+            get { lock (LockObj) return _restoreBlockedRawSnapshot; }
+        }
+
+        internal static string LastPersistedSnapshotForTests
+        {
+            get { lock (LockObj) return _lastPersistedSnapshotForTests; }
         }
 
         internal static TestJobIdentity? PhysicalOwnerForTests
@@ -153,6 +185,7 @@ namespace MCPForUnity.Editor.Services
 
         internal static void EnsureInitialized()
         {
+            EnsureLifecycleWatchdogSubscribed();
             TestJobIdentity? restoredOwner = null;
             TestJob restoredJob = null;
             List<TestJobIdentity> queued = null;
@@ -170,10 +203,13 @@ namespace MCPForUnity.Editor.Services
                     {
                         Jobs.TryGetValue(restoredOwner.Value.JobId, out restoredJob);
                     }
-                    queued = Jobs.Values
-                        .Where(job => job.Phase == TestJobPhase.Queued)
-                        .Select(IdentityOf)
-                        .ToList();
+                    if (!_restoreBlocked)
+                    {
+                        queued = Jobs.Values
+                            .Where(job => job.Phase == TestJobPhase.Queued)
+                            .Select(IdentityOf)
+                            .ToList();
+                    }
                 }
                 finally
                 {
@@ -182,7 +218,11 @@ namespace MCPForUnity.Editor.Services
             }
 
             SharedEditorOperationLock.EnsureInitialized();
-            if (restoredOwner.HasValue && restoredJob != null)
+            if (_restoreBlocked && restoredOwner.HasValue)
+            {
+                ReconcileRestoreBlockedFence(restoredOwner.Value);
+            }
+            else if (restoredOwner.HasValue && restoredJob != null)
             {
                 ReconcilePhysicalOwnerLock(restoredOwner.Value, restoredJob);
                 TestRunStatus.RehydrateRunning(ParseMode(restoredJob.Mode), restoredJob.StartedUnixMs);
@@ -217,7 +257,7 @@ namespace MCPForUnity.Editor.Services
             TestJobIdentity identity;
             lock (LockObj)
             {
-                if (!string.IsNullOrEmpty(_currentJobId) || _physicalOwner.HasValue)
+                if (_restoreBlocked || !string.IsNullOrEmpty(_currentJobId) || _physicalOwner.HasValue)
                 {
                     throw new InvalidOperationException("A Unity test run is already in progress.");
                 }
@@ -230,6 +270,8 @@ namespace MCPForUnity.Editor.Services
                     Status = TestJobStatus.Running,
                     Phase = TestJobPhase.Queued,
                     Mode = mode.ToString(),
+                    CreatedUnixMs = now,
+                    QueuedDeadlineUnixMs = now + QueuedDeadlineBudgetMs,
                     StartedUnixMs = now,
                     LastUpdateUnixMs = now,
                     FailuresSoFar = new List<TestJobFailure>(),
@@ -310,6 +352,7 @@ namespace MCPForUnity.Editor.Services
                 if (!Jobs.TryGetValue(identity.JobId, out job)
                     || IdentityOf(job) != identity
                     || job.Phase != TestJobPhase.Queued
+                    || (job.QueuedDeadlineUnixMs > 0 && Now() > job.QueuedDeadlineUnixMs)
                     || _physicalOwner.HasValue)
                 {
                     return false;
@@ -670,37 +713,151 @@ namespace MCPForUnity.Editor.Services
             EnsureInitialized();
             if (string.IsNullOrWhiteSpace(jobId)) return null;
 
-            bool shouldPersist = false;
-            TestJob result;
             lock (LockObj)
             {
-                if (!Jobs.TryGetValue(jobId, out result)) return null;
+                return Jobs.TryGetValue(jobId, out TestJob result)
+                    ? CloneJob(result)
+                    : null;
+            }
+        }
 
-                // The budget starts only after Execute returned for the matching physical owner.
-                if (result.Status == TestJobStatus.Running
-                    && result.Phase == TestJobPhase.AwaitingRunStarted
-                    && result.AwaitingRunStartedSinceUnixMs.HasValue)
+        internal static bool LifecycleWatchdogTickForTests()
+            => LifecycleWatchdogTick();
+
+        internal static void LifecycleWatchdogUpdateForTests()
+            => LifecycleWatchdogUpdate();
+
+        internal static void EnsureLifecycleWatchdogForTests()
+            => EnsureLifecycleWatchdogSubscribed();
+
+        private static void EnsureLifecycleWatchdogSubscribed()
+        {
+            lock (LockObj)
+            {
+                if (_watchdogSubscribed) return;
+                EditorApplication.update -= LifecycleWatchdogUpdate;
+                EditorApplication.update += LifecycleWatchdogUpdate;
+                _watchdogSubscribed = true;
+            }
+        }
+
+        private static void LifecycleWatchdogUpdate()
+        {
+            EnsureInitialized();
+            LifecycleWatchdogTick();
+            bool workRemains;
+            lock (LockObj) workRemains = HasWatchdogWorkLocked();
+            if (!workRemains) return;
+
+            if (QueuePlayerLoopUpdateForTests != null)
+            {
+                QueuePlayerLoopUpdateForTests();
+            }
+            else
+            {
+                EditorApplication.QueuePlayerLoopUpdate();
+            }
+        }
+
+        private static bool LifecycleWatchdogTick()
+        {
+            EnsureInitialized();
+            TestJobIdentity releasedQueuedOwner = default;
+            bool releaseQueuedLock = false;
+            TestJob transitioned = null;
+
+            lock (LockObj)
+            {
+                if (_restoreBlocked || string.IsNullOrEmpty(_currentJobId)
+                    || !Jobs.TryGetValue(_currentJobId, out TestJob job)
+                    || job.Status != TestJobStatus.Running)
                 {
-                    long now = Now();
-                    long timeout = result.InitTimeoutMs > 0
-                        ? result.InitTimeoutMs
-                        : DefaultInitializationTimeoutMs;
-                    if (!EditorStateCache.GetActualIsCompiling()
-                        && !EditorApplication.isUpdating
-                        && now - result.AwaitingRunStartedSinceUnixMs.Value > timeout)
+                    return false;
+                }
+
+                long now = Now();
+                if (job.Phase == TestJobPhase.Queued
+                    && !_physicalOwner.HasValue
+                    && now > job.QueuedDeadlineUnixMs)
+                {
+                    TestJob prior = CloneJob(job);
+                    string priorCurrent = _currentJobId;
+                    job.Status = TestJobStatus.Failed;
+                    job.Phase = TestJobPhase.Terminal;
+                    job.Error = "Test job expired in the queued phase before Unity acquired a physical owner";
+                    job.FinishedUnixMs = now;
+                    job.PhysicalFinishedUnixMs = now;
+                    job.LastUpdateUnixMs = now;
+                    _currentJobId = null;
+                    if (!PersistToSessionState(force: true, critical: true))
                     {
-                        result.Status = TestJobStatus.Failed;
-                        result.Error = "Test job failed to initialize (RunStarted was not observed within timeout; physical fence retained)";
-                        result.FinishedUnixMs = now;
-                        result.LastUpdateUnixMs = now;
-                        shouldPersist = true;
-                        McpLog.Warn($"[TestJobManager] Job {jobId} logical init timeout after {timeout}ms; physical owner retained={_physicalOwner.HasValue}");
+                        Jobs[job.JobId] = prior;
+                        _currentJobId = priorCurrent;
+                        return false;
                     }
+                    releasedQueuedOwner = IdentityOf(job);
+                    releaseQueuedLock = true;
+                    transitioned = CloneJob(job);
+                    PruneJobsLocked();
+                }
+                else if (job.Phase == TestJobPhase.AwaitingRunStarted
+                         && job.AwaitingRunStartedSinceUnixMs.HasValue
+                         && _physicalOwner.HasValue
+                         && _physicalOwner.Value == IdentityOf(job))
+                {
+                    long timeout = job.InitTimeoutMs > 0
+                        ? job.InitTimeoutMs
+                        : DefaultInitializationTimeoutMs;
+                    if (EditorStateCache.GetActualIsCompiling()
+                        || EditorApplication.isUpdating
+                        || now - job.AwaitingRunStartedSinceUnixMs.Value <= timeout)
+                    {
+                        return false;
+                    }
+
+                    TestJob prior = CloneJob(job);
+                    job.Status = TestJobStatus.Failed;
+                    job.Error = "Test job failed to initialize (RunStarted was not observed within timeout; physical fence retained)";
+                    job.FinishedUnixMs = now;
+                    job.LastUpdateUnixMs = now;
+                    if (!PersistToSessionState(force: true, critical: true))
+                    {
+                        Jobs[job.JobId] = prior;
+                        return false;
+                    }
+                    transitioned = CloneJob(job);
+                    McpLog.Warn($"[TestJobManager] Job {job.JobId} logical init timeout after {timeout}ms; physical owner retained={_physicalOwner.HasValue}");
+                }
+                else
+                {
+                    return false;
                 }
             }
 
-            if (shouldPersist) PersistToSessionState(force: true);
-            return result;
+            if (releaseQueuedLock)
+            {
+                var lockState = SharedEditorOperationLock.GetState();
+                if (lockState.IsAttachedToJob
+                    && string.Equals(lockState.AttachedJobId, releasedQueuedOwner.JobId, StringComparison.Ordinal)
+                    && lockState.AttachedJobGeneration == releasedQueuedOwner.Generation)
+                {
+                    SharedEditorOperationLock.AbortAttachedJob(releasedQueuedOwner);
+                }
+            }
+            LogPhase(transitioned, releaseQueuedLock ? "queued_deadline" : "initialization_deadline");
+            return true;
+        }
+
+        private static bool HasWatchdogWorkLocked()
+        {
+            if (_restoreBlocked || string.IsNullOrEmpty(_currentJobId)
+                || !Jobs.TryGetValue(_currentJobId, out TestJob job)
+                || job.Status != TestJobStatus.Running)
+            {
+                return false;
+            }
+            return job.Phase == TestJobPhase.Queued
+                   || job.Phase == TestJobPhase.AwaitingRunStarted;
         }
 
         internal static object ToSerializable(TestJob job, bool includeDetails, bool includeFailedTests)
@@ -729,6 +886,8 @@ namespace MCPForUnity.Editor.Services
                 status = job.Status.ToString().ToLowerInvariant(),
                 phase = PhaseName(job.Phase),
                 mode = job.Mode,
+                created_unix_ms = job.CreatedUnixMs,
+                queued_deadline_unix_ms = job.QueuedDeadlineUnixMs,
                 started_unix_ms = job.StartedUnixMs,
                 awaiting_run_started_since_unix_ms = job.AwaitingRunStartedSinceUnixMs,
                 finished_unix_ms = job.FinishedUnixMs,
@@ -781,6 +940,45 @@ namespace MCPForUnity.Editor.Services
                 full_name = item?.FullName,
                 message = item?.Message,
             }).ToArray();
+        }
+
+        private sealed class PersistedStateV3
+        {
+            public int schema_version { get; set; } = 3;
+            public string current_job_id { get; set; }
+            public PersistedOwner physical_owner { get; set; }
+            public long next_generation { get; set; }
+            public List<PersistedJobV3> jobs { get; set; }
+        }
+
+        private sealed class PersistedJobV3
+        {
+            public string job_id { get; set; }
+            public long generation { get; set; }
+            public string status { get; set; }
+            public string phase { get; set; }
+            public string mode { get; set; }
+            public long created_unix_ms { get; set; }
+            public long queued_deadline_unix_ms { get; set; }
+            public long started_unix_ms { get; set; }
+            public long? awaiting_run_started_since_unix_ms { get; set; }
+            public long? finished_unix_ms { get; set; }
+            public long? physical_finished_unix_ms { get; set; }
+            public long last_update_unix_ms { get; set; }
+            public int? total_tests { get; set; }
+            public int completed_tests { get; set; }
+            public string current_test_full_name { get; set; }
+            public long? current_test_started_unix_ms { get; set; }
+            public string last_finished_test_full_name { get; set; }
+            public long? last_finished_unix_ms { get; set; }
+            public List<TestJobFailure> failures_so_far { get; set; }
+            public string error { get; set; }
+            public long init_timeout_ms { get; set; }
+            public string[] test_names { get; set; }
+            public string[] group_names { get; set; }
+            public string[] category_names { get; set; }
+            public string[] assembly_names { get; set; }
+            public string attached_lock_token { get; set; }
         }
 
         private sealed class PersistedStateV2
@@ -858,13 +1056,51 @@ namespace MCPForUnity.Editor.Services
             _currentJobId = null;
             _physicalOwner = null;
             _nextGeneration = 1;
+            _restoreBlocked = false;
+            _restoreBlockedRawSnapshot = null;
 
+            string candidateRaw = null;
             try
             {
+                string jsonV3 = SessionState.GetString(SessionKeyJobsV3, string.Empty);
+                if (!string.IsNullOrWhiteSpace(jsonV3))
+                {
+                    candidateRaw = jsonV3;
+                    int schemaVersion = JObject.Parse(jsonV3).Value<int?>("schema_version") ?? 0;
+                    if (schemaVersion == 3)
+                    {
+                        RestoreV3Locked(JsonConvert.DeserializeObject<PersistedStateV3>(jsonV3));
+                    }
+                    else if (schemaVersion > 3)
+                    {
+                        BlockUnknownSchemaLocked(jsonV3);
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException($"V3 storage contains schema_version={schemaVersion}.");
+                    }
+                    return;
+                }
+
                 string jsonV2 = SessionState.GetString(SessionKeyJobsV2, string.Empty);
                 if (!string.IsNullOrWhiteSpace(jsonV2))
                 {
+                    candidateRaw = jsonV2;
+                    int schemaVersion = JObject.Parse(jsonV2).Value<int?>("schema_version") ?? 0;
+                    if (schemaVersion > 2)
+                    {
+                        BlockUnknownSchemaLocked(jsonV2);
+                        return;
+                    }
+                    if (schemaVersion != 2)
+                    {
+                        throw new InvalidOperationException($"V2 storage contains schema_version={schemaVersion}.");
+                    }
                     RestoreV2Locked(JsonConvert.DeserializeObject<PersistedStateV2>(jsonV2));
+                    if (!PersistToSessionState(force: true, critical: true))
+                    {
+                        BlockFailedMigrationLocked(jsonV2);
+                    }
                     return;
                 }
 
@@ -877,14 +1113,211 @@ namespace MCPForUnity.Editor.Services
                 }
 
                 RestoreV1Locked(JsonConvert.DeserializeObject<PersistedStateV1>(jsonV1));
-                PersistToSessionState(force: true);
+                if (!PersistToSessionState(force: true, critical: true))
+                {
+                    BlockFailedMigrationLocked(jsonV1);
+                }
             }
             catch (Exception ex)
             {
                 Jobs.Clear();
-                _currentJobId = null;
-                _physicalOwner = null;
-                McpLog.Warn($"[TestJobManager] Failed to restore SessionState: {ex.Message}");
+                if (!string.IsNullOrWhiteSpace(candidateRaw))
+                {
+                    BlockUnknownSchemaLocked(candidateRaw);
+                    McpLog.Error($"[TestJobManager] Restore blocked to preserve an unreadable lifecycle snapshot: {ex.Message}");
+                }
+                else
+                {
+                    _currentJobId = null;
+                    _physicalOwner = null;
+                    McpLog.Warn($"[TestJobManager] Failed to restore SessionState: {ex.Message}");
+                }
+            }
+        }
+
+        private static void BlockUnknownSchemaLocked(string rawSnapshot)
+        {
+            _restoreBlocked = true;
+            _restoreBlockedRawSnapshot = rawSnapshot;
+            _currentJobId = null;
+            _physicalOwner = null;
+            try
+            {
+                JObject payload = JObject.Parse(rawSnapshot);
+                _currentJobId = payload.Value<string>("current_job_id");
+                JToken owner = payload["physical_owner"];
+                string jobId = owner?.Value<string>("job_id");
+                long generation = owner?.Value<long?>("generation") ?? 0;
+                if (!string.IsNullOrWhiteSpace(jobId) && generation > 0)
+                {
+                    _physicalOwner = new TestJobIdentity(jobId, generation);
+                    _currentJobId ??= jobId;
+                }
+                _nextGeneration = Math.Max(1, payload.Value<long?>("next_generation") ?? 1);
+            }
+            catch
+            {
+                // Raw bytes remain authoritative even when minimal fence fields
+                // cannot be interpreted. StartJob is still blocked.
+            }
+        }
+
+        private static void BlockFailedMigrationLocked(string rawSnapshot)
+        {
+            // The older snapshot remains authoritative until its V3 replacement is
+            // durable. Keep decoded fence identity for observation, but never replay
+            // or mutate work from an in-memory-only migration.
+            _restoreBlocked = true;
+            _restoreBlockedRawSnapshot = rawSnapshot;
+            ScheduledDispatches.Clear();
+        }
+
+        private static void RestoreV3Locked(PersistedStateV3 state)
+        {
+            if (state?.jobs == null || state.next_generation <= 0)
+            {
+                throw new InvalidOperationException("Invalid V3 lifecycle envelope.");
+            }
+            foreach (PersistedJobV3 persisted in state.jobs)
+            {
+                if (persisted == null
+                    || string.IsNullOrWhiteSpace(persisted.job_id)
+                    || persisted.generation <= 0
+                    || Jobs.ContainsKey(persisted.job_id))
+                {
+                    throw new InvalidOperationException("Invalid or duplicate V3 lifecycle job identity.");
+                }
+                long created = persisted.created_unix_ms;
+                long expectedQueuedDeadline = checked(created + QueuedDeadlineBudgetMs);
+                if (created <= 0 || persisted.queued_deadline_unix_ms != expectedQueuedDeadline)
+                {
+                    throw new InvalidOperationException(
+                        $"Invalid V3 queued deadline for job {persisted.job_id}.");
+                }
+                var job = new TestJob
+                {
+                    JobId = persisted.job_id,
+                    Generation = persisted.generation,
+                    Status = ParseV3Status(persisted.status),
+                    Phase = ParseV3Phase(persisted.phase),
+                    Mode = persisted.mode,
+                    CreatedUnixMs = created,
+                    QueuedDeadlineUnixMs = expectedQueuedDeadline,
+                    StartedUnixMs = persisted.started_unix_ms > 0 ? persisted.started_unix_ms : created,
+                    AwaitingRunStartedSinceUnixMs = persisted.awaiting_run_started_since_unix_ms,
+                    FinishedUnixMs = persisted.finished_unix_ms,
+                    PhysicalFinishedUnixMs = persisted.physical_finished_unix_ms,
+                    LastUpdateUnixMs = persisted.last_update_unix_ms,
+                    TotalTests = persisted.total_tests,
+                    CompletedTests = persisted.completed_tests,
+                    CurrentTestFullName = persisted.current_test_full_name,
+                    CurrentTestStartedUnixMs = persisted.current_test_started_unix_ms,
+                    LastFinishedTestFullName = persisted.last_finished_test_full_name,
+                    LastFinishedUnixMs = persisted.last_finished_unix_ms,
+                    FailuresSoFar = persisted.failures_so_far ?? new List<TestJobFailure>(),
+                    Error = persisted.error,
+                    InitTimeoutMs = persisted.init_timeout_ms,
+                    FilterOptions = new TestFilterOptions
+                    {
+                        TestNames = persisted.test_names,
+                        GroupNames = persisted.group_names,
+                        CategoryNames = persisted.category_names,
+                        AssemblyNames = persisted.assembly_names,
+                    },
+                    AttachedLockToken = persisted.attached_lock_token,
+                };
+                Jobs[job.JobId] = job;
+                _nextGeneration = Math.Max(_nextGeneration, job.Generation + 1);
+            }
+
+            if (state.next_generation < _nextGeneration)
+            {
+                throw new InvalidOperationException("Invalid V3 next_generation fence.");
+            }
+            RestoreV3PointersLocked(state.current_job_id, state.physical_owner);
+            ValidateV3LifecycleRelationshipsLocked();
+            _nextGeneration = state.next_generation;
+        }
+
+        private static void RestoreV3PointersLocked(
+            string currentJobId,
+            PersistedOwner physicalOwner)
+        {
+            _currentJobId = string.IsNullOrWhiteSpace(currentJobId) ? null : currentJobId;
+            if (_currentJobId != null
+                && (!Jobs.TryGetValue(_currentJobId, out TestJob current)
+                    || current.Phase == TestJobPhase.Terminal))
+            {
+                throw new InvalidOperationException("Invalid V3 current_job_id fence.");
+            }
+
+            if (physicalOwner == null) return;
+            if (_currentJobId == null)
+            {
+                throw new InvalidOperationException(
+                    "physical owner requires matching current_job_id.");
+            }
+            if (string.IsNullOrWhiteSpace(physicalOwner.job_id)
+                || physicalOwner.generation <= 0
+                || !Jobs.TryGetValue(physicalOwner.job_id, out TestJob physicalJob)
+                || physicalJob.Generation != physicalOwner.generation
+                || physicalJob.Phase == TestJobPhase.Terminal
+                || (_currentJobId != null
+                    && !string.Equals(_currentJobId, physicalOwner.job_id, StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException("Invalid V3 physical_owner fence.");
+            }
+
+            _physicalOwner = new TestJobIdentity(physicalJob.JobId, physicalJob.Generation);
+        }
+
+        private static void ValidateV3LifecycleRelationshipsLocked()
+        {
+            foreach (TestJob job in Jobs.Values)
+            {
+                bool isCurrent = string.Equals(
+                    _currentJobId,
+                    job.JobId,
+                    StringComparison.Ordinal);
+                bool isPhysicalOwner = _physicalOwner.HasValue
+                                       && _physicalOwner.Value == IdentityOf(job);
+
+                if (job.Phase == TestJobPhase.Terminal)
+                {
+                    if (job.Status == TestJobStatus.Running)
+                    {
+                        throw new InvalidOperationException(
+                            $"terminal phase requires a terminal logical status for job {job.JobId}.");
+                    }
+                    continue;
+                }
+
+                if (!isCurrent)
+                {
+                    throw new InvalidOperationException(
+                        $"nonterminal phase requires current_job_id for job {job.JobId}.");
+                }
+
+                if (job.Phase == TestJobPhase.Queued)
+                {
+                    if (job.Status != TestJobStatus.Running)
+                    {
+                        throw new InvalidOperationException(
+                            $"queued phase requires running logical status for job {job.JobId}.");
+                    }
+                    if (isPhysicalOwner)
+                    {
+                        throw new InvalidOperationException(
+                            $"queued phase cannot have a physical owner for job {job.JobId}.");
+                    }
+                    continue;
+                }
+
+                if (!isPhysicalOwner)
+                {
+                    throw new InvalidOperationException(
+                        $"physical phase requires matching physical_owner for job {job.JobId}.");
+                }
             }
         }
 
@@ -901,6 +1334,8 @@ namespace MCPForUnity.Editor.Services
                     Status = ParseStatus(persisted.status),
                     Phase = ParsePhase(persisted.phase),
                     Mode = persisted.mode,
+                    CreatedUnixMs = persisted.started_unix_ms,
+                    QueuedDeadlineUnixMs = persisted.started_unix_ms + QueuedDeadlineBudgetMs,
                     StartedUnixMs = persisted.started_unix_ms,
                     AwaitingRunStartedSinceUnixMs = persisted.awaiting_run_started_since_unix_ms,
                     FinishedUnixMs = persisted.finished_unix_ms,
@@ -928,13 +1363,21 @@ namespace MCPForUnity.Editor.Services
                 _nextGeneration = Math.Max(_nextGeneration, job.Generation + 1);
             }
 
-            _nextGeneration = Math.Max(_nextGeneration, state.next_generation > 0 ? state.next_generation : 1);
-            _currentJobId = string.IsNullOrWhiteSpace(state.current_job_id) ? null : state.current_job_id;
+            RestorePointersLocked(state.current_job_id, state.physical_owner, state.next_generation);
+        }
+
+        private static void RestorePointersLocked(
+            string currentJobId,
+            PersistedOwner physicalOwner,
+            long nextGeneration)
+        {
+            _nextGeneration = Math.Max(_nextGeneration, nextGeneration > 0 ? nextGeneration : 1);
+            _currentJobId = string.IsNullOrWhiteSpace(currentJobId) ? null : currentJobId;
             if (!string.IsNullOrEmpty(_currentJobId) && !Jobs.ContainsKey(_currentJobId)) _currentJobId = null;
 
-            if (state.physical_owner != null
-                && Jobs.TryGetValue(state.physical_owner.job_id, out TestJob physicalJob)
-                && physicalJob.Generation == state.physical_owner.generation
+            if (physicalOwner != null
+                && Jobs.TryGetValue(physicalOwner.job_id, out TestJob physicalJob)
+                && physicalJob.Generation == physicalOwner.generation
                 && physicalJob.Phase != TestJobPhase.Terminal)
             {
                 _physicalOwner = new TestJobIdentity(physicalJob.JobId, physicalJob.Generation);
@@ -957,6 +1400,8 @@ namespace MCPForUnity.Editor.Services
                     Status = status,
                     Phase = status == TestJobStatus.Running ? TestJobPhase.Running : TestJobPhase.Terminal,
                     Mode = persisted.mode,
+                    CreatedUnixMs = persisted.started_unix_ms,
+                    QueuedDeadlineUnixMs = persisted.started_unix_ms + QueuedDeadlineBudgetMs,
                     StartedUnixMs = persisted.started_unix_ms,
                     AwaitingRunStartedSinceUnixMs = null,
                     FinishedUnixMs = persisted.finished_unix_ms,
@@ -994,15 +1439,19 @@ namespace MCPForUnity.Editor.Services
 
         private static bool PersistToSessionState(bool force = false, bool critical = false)
         {
+            lock (LockObj)
+            {
+                if (_restoreBlocked) return false;
+            }
             long now = Now();
             if (!force && now - _lastPersistUnixMs < MinPersistIntervalMs) return true;
 
             try
             {
-                PersistedStateV2 snapshot;
+                PersistedStateV3 snapshot;
                 lock (LockObj)
                 {
-                    snapshot = new PersistedStateV2
+                    snapshot = new PersistedStateV3
                     {
                         current_job_id = _currentJobId,
                         physical_owner = _physicalOwner.HasValue
@@ -1026,9 +1475,21 @@ namespace MCPForUnity.Editor.Services
                 {
                     throw new InvalidOperationException("Injected SessionState persistence failure.");
                 }
-                SessionState.SetString(SessionKeyJobsV2, json);
-                SessionState.SetString(SessionKeyCurrentJobIdV1, snapshot.current_job_id ?? string.Empty);
+                SessionState.SetString(SessionKeyJobsV3, json);
+                _lastPersistedSnapshotForTests = json;
                 _lastPersistUnixMs = now;
+                try
+                {
+                    // V3 is authoritative once written. Legacy cleanup must not turn
+                    // a durable transition into an apparent persistence failure.
+                    SessionState.SetString(SessionKeyJobsV2, string.Empty);
+                    SessionState.SetString(SessionKeyJobsV1, string.Empty);
+                    SessionState.SetString(SessionKeyCurrentJobIdV1, snapshot.current_job_id ?? string.Empty);
+                }
+                catch (Exception cleanupException)
+                {
+                    McpLog.Warn($"[TestJobManager] V3 persisted but legacy lifecycle cleanup failed: {cleanupException.Message}");
+                }
                 return true;
             }
             catch (Exception ex)
@@ -1090,15 +1551,52 @@ namespace MCPForUnity.Editor.Services
             }
         }
 
-        private static PersistedJobV2 ToPersisted(TestJob job)
+        private static void ReconcileRestoreBlockedFence(TestJobIdentity owner)
         {
-            return new PersistedJobV2
+            if (!SharedEditorOperationLock.IsEnabled) return;
+            var state = SharedEditorOperationLock.GetState();
+            if (state.IsAttachedToJob)
+            {
+                if (!string.Equals(state.AttachedJobId, owner.JobId, StringComparison.Ordinal)
+                    || state.AttachedJobGeneration != owner.Generation)
+                {
+                    McpLog.Error($"[TestJobManager] Restore-blocked owner {owner} conflicts with the attached lock; retaining both fences.");
+                }
+                return;
+            }
+
+            string token = null;
+            bool attached;
+            if (state.Locked)
+            {
+                attached = SharedEditorOperationLock.AttachCurrentToJobForRecovery(owner, out token);
+            }
+            else
+            {
+                var acquired = SharedEditorOperationLock.TryAcquire(
+                    "test-job-future-schema",
+                    $"restore-blocked:{owner.JobId}",
+                    isExplicit: false);
+                token = acquired.Token;
+                attached = acquired.Acquired && SharedEditorOperationLock.AttachToJob(token, owner);
+            }
+            if (!attached)
+            {
+                McpLog.Error($"[TestJobManager] Could not re-establish the restore-blocked fence for {owner}.");
+            }
+        }
+
+        private static PersistedJobV3 ToPersisted(TestJob job)
+        {
+            return new PersistedJobV3
             {
                 job_id = job.JobId,
                 generation = job.Generation,
                 status = job.Status.ToString().ToLowerInvariant(),
                 phase = PhaseName(job.Phase),
                 mode = job.Mode,
+                created_unix_ms = job.CreatedUnixMs,
+                queued_deadline_unix_ms = job.QueuedDeadlineUnixMs,
                 started_unix_ms = job.StartedUnixMs,
                 awaiting_run_started_since_unix_ms = job.AwaitingRunStartedSinceUnixMs,
                 finished_unix_ms = job.FinishedUnixMs,
@@ -1142,6 +1640,8 @@ namespace MCPForUnity.Editor.Services
                 Status = source.Status,
                 Phase = source.Phase,
                 Mode = source.Mode,
+                CreatedUnixMs = source.CreatedUnixMs,
+                QueuedDeadlineUnixMs = source.QueuedDeadlineUnixMs,
                 StartedUnixMs = source.StartedUnixMs,
                 AwaitingRunStartedSinceUnixMs = source.AwaitingRunStartedSinceUnixMs,
                 FinishedUnixMs = source.FinishedUnixMs,
@@ -1189,6 +1689,30 @@ namespace MCPForUnity.Editor.Services
             };
         }
 
+        private static TestJobStatus ParseV3Status(string status)
+        {
+            return status?.Trim().ToLowerInvariant() switch
+            {
+                "running" => TestJobStatus.Running,
+                "succeeded" => TestJobStatus.Succeeded,
+                "failed" => TestJobStatus.Failed,
+                _ => throw new InvalidOperationException($"Unknown V3 test status '{status}'."),
+            };
+        }
+
+        private static TestJobPhase ParseV3Phase(string phase)
+        {
+            return phase?.Trim().ToLowerInvariant() switch
+            {
+                "queued" => TestJobPhase.Queued,
+                "dispatching" => TestJobPhase.Dispatching,
+                "awaiting_run_started" => TestJobPhase.AwaitingRunStarted,
+                "running" => TestJobPhase.Running,
+                "terminal" => TestJobPhase.Terminal,
+                _ => throw new InvalidOperationException($"Unknown V3 test phase '{phase}'."),
+            };
+        }
+
         private static TestJobPhase ParsePhase(string phase)
         {
             return phase?.Trim().ToLowerInvariant() switch
@@ -1197,6 +1721,7 @@ namespace MCPForUnity.Editor.Services
                 "dispatching" => TestJobPhase.Dispatching,
                 "awaiting_run_started" => TestJobPhase.AwaitingRunStarted,
                 "running" => TestJobPhase.Running,
+                "restore_blocked" => TestJobPhase.RestoreBlocked,
                 "terminal" => TestJobPhase.Terminal,
                 _ => TestJobPhase.Running,
             };
@@ -1277,22 +1802,44 @@ namespace MCPForUnity.Editor.Services
                 _lastPersistUnixMs = 0;
                 _initialized = false;
                 _initializing = false;
+                _restoreBlocked = false;
+                _restoreBlockedRawSnapshot = null;
             }
         }
 
         internal static void ResetForTests(bool clearSessionState)
         {
+            lock (LockObj)
+            {
+                if (_watchdogSubscribed)
+                {
+                    EditorApplication.update -= LifecycleWatchdogUpdate;
+                    _watchdogSubscribed = false;
+                }
+            }
             ClearInMemoryForTests();
             UnixTimeMillisecondsForTests = null;
             DelayCallSchedulerForTests = null;
             PersistSnapshotForTests = null;
+            QueuePlayerLoopUpdateForTests = null;
+            _lastPersistedSnapshotForTests = null;
             if (clearSessionState)
             {
                 SessionState.SetString(SessionKeyJobsV1, string.Empty);
                 SessionState.SetString(SessionKeyJobsV2, string.Empty);
+                SessionState.SetString(SessionKeyJobsV3, string.Empty);
                 SessionState.SetString(SessionKeyCurrentJobIdV1, string.Empty);
             }
             lock (LockObj) _initialized = true;
+            EnsureLifecycleWatchdogSubscribed();
+        }
+
+        internal static void SeedPersistedSnapshotForTests(string json, int storageVersion)
+        {
+            SessionState.SetString(SessionKeyJobsV1, string.Empty);
+            SessionState.SetString(SessionKeyJobsV2, storageVersion == 2 ? json : string.Empty);
+            SessionState.SetString(SessionKeyJobsV3, storageVersion == 3 ? json : string.Empty);
+            SessionState.SetString(SessionKeyCurrentJobIdV1, string.Empty);
         }
 
         internal static void SeedLegacyV1StateForTests(
@@ -1318,6 +1865,7 @@ namespace MCPForUnity.Editor.Services
                 },
             };
             SessionState.SetString(SessionKeyJobsV2, string.Empty);
+            SessionState.SetString(SessionKeyJobsV3, string.Empty);
             SessionState.SetString(SessionKeyJobsV1, JsonConvert.SerializeObject(state));
             SessionState.SetString(SessionKeyCurrentJobIdV1, jobId);
         }
