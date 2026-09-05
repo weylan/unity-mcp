@@ -31,6 +31,7 @@ namespace MCPForUnityTests.Editor.Services
             _hadBudgetPref = EditorPrefs.HasKey("MCPForUnity.PlayModePumpBudgetMs");
             _oldBudgetPref = EditorPrefs.GetInt("MCPForUnity.PlayModePumpBudgetMs", 4);
             TransportCommandDispatcher.ResetForTests();
+            EditorUpdateScheduler.ResetForTests();
             TransportCommandDispatcher.SlicingActiveOverrideForTests = null;
             TransportCommandDispatcher.DelayCallRegistrarForTests = null;
         }
@@ -51,6 +52,7 @@ namespace MCPForUnityTests.Editor.Services
             TransportCommandDispatcher.DelayCallRegistrarForTests = null;
             TransportCommandDispatcher.SlicingActiveOverrideForTests = null;
             TransportCommandDispatcher.ResetForTests();
+            EditorUpdateScheduler.ResetForTests();
         }
 
         [Test]
@@ -238,6 +240,37 @@ namespace MCPForUnityTests.Editor.Services
             Assert.IsTrue(WaitUntil(() => task.IsCompleted), "Async command should complete its TCS.");
             Assert.IsTrue(WaitUntil(() => TransportCommandDispatcher.PendingCountForTests == 0),
                 "Cleanup fallback must remove pending even if delayCall registration throws.");
+        }
+
+        [Test]
+        public void AsyncCompletion_CleanupIsUpdateDrivenAndExactlyOnce()
+        {
+            TransportCommandDispatcher.SlicingActiveOverrideForTests = () => true;
+            TransportCommandDispatcher.DelayCallRegistrarForTests = null;
+            EditorUpdateScheduler.ResetForTests();
+            TransportCommandDispatcher.CommandExecutorOverrideForTests = (_, __, completion) =>
+            {
+                completion.TrySetResult("{\"status\":\"success\",\"result\":{}}");
+                return null;
+            };
+
+            var task = TransportCommandDispatcher.ExecuteCommandJsonAsync(
+                CommandJson("test_dispatcher_async", new JObject()),
+                CancellationToken.None);
+            TransportCommandDispatcher.ProcessQueueForTests();
+
+            Assert.IsTrue(WaitUntil(() => task.IsCompleted), "The asynchronous command must complete its response task.");
+            Assert.IsTrue(WaitUntil(() => EditorUpdateScheduler.PendingCountForTests > 0),
+                "Worker completion must enqueue cleanup for the editor update pump.");
+            Assert.AreEqual(1, TransportCommandDispatcher.PendingCountForTests,
+                "The pending command remains owned until the update-driven cleanup executes.");
+
+            EditorUpdateScheduler.PumpForTests();
+            Assert.AreEqual(0, TransportCommandDispatcher.PendingCountForTests);
+
+            EditorUpdateScheduler.PumpForTests();
+            Assert.AreEqual(0, TransportCommandDispatcher.PendingCountForTests,
+                "A second update tick must not repeat cleanup.");
         }
 
         [Test]

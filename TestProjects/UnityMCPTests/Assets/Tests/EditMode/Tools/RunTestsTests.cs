@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using System.Threading;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using MCPForUnity.Editor.Helpers;
@@ -115,5 +116,67 @@ namespace MCPForUnityTests.Editor.Tools
                 Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", oldLockMode);
             }
         }
+
+        [Test]
+        public void PublicHandleCommand_ProductionSchedulerSeamsDisabled()
+        {
+            var runner = new ControlledJobBoundTestRunner();
+            string oldLockMode = Environment.GetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK");
+            Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", "on");
+            MCPServiceLocator.Reset();
+            TestJobManager.ResetForTests(clearSessionState: true);
+            SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+            TestRunStatus.ResetForTests();
+            MCPServiceLocator.Register<ITestRunnerService>(runner);
+            TestJobManager.DelayCallSchedulerForTests = null;
+            EditorUpdateScheduler.ResetForTests();
+
+            var acquired = SharedEditorOperationLock.TryAcquire("auto", "run_tests", isExplicit: false);
+            Assert.IsTrue(acquired.Acquired);
+
+            try
+            {
+                object response = MCPForUnity.Editor.Tools.RunTests.HandleCommand(new JObject
+                {
+                    ["mode"] = "EditMode",
+                    ["testNames"] = new JArray("ProductionScheduler.Red"),
+                    [MCPForUnity.Editor.Tools.RunTests.InternalEditorLockTokenParameter] = acquired.Token
+                }).GetAwaiter().GetResult();
+
+                var json = JObject.FromObject(response);
+                string jobId = json["data"]?.Value<string>("job_id");
+                Assert.IsTrue(json.Value<bool>("success"), json.ToString());
+                Assert.AreEqual("queued", json["data"]?.Value<string>("status"));
+                Assert.AreEqual(0, runner.InvocationCount);
+
+                EditorUpdateScheduler.PumpForTests();
+                TestJobIdentity owner = TestJobManager.PhysicalOwnerForTests.Value;
+                Assert.AreEqual(1, runner.InvocationCount);
+                Assert.IsTrue(TestJobManager.OnRunStarted(owner, 1));
+
+                runner.Complete();
+                Assert.IsTrue(SpinWait.SpinUntil(() => EditorUpdateScheduler.PendingCountForTests > 0, 3_000));
+                EditorUpdateScheduler.PumpForTests();
+
+                JObject job = JObject.FromObject(TestJobManager.ToSerializable(
+                    TestJobManager.GetJob(jobId), includeDetails: true, includeFailedTests: true));
+                Assert.IsTrue(job["receipt"]?.Value<bool>("owner_persisted") ?? false, job.ToString());
+                Assert.IsTrue(job["receipt"]?.Value<bool>("run_started") ?? false, job.ToString());
+                Assert.IsTrue(job["receipt"]?.Value<bool>("physical_terminal") ?? false, job.ToString());
+                Assert.AreEqual(1, job["receipt"]?.Value<int>("cleanup_count"));
+                Assert.IsTrue(job["safe_to_start_new_run"]?.Value<bool>() ?? false, job.ToString());
+            }
+            finally
+            {
+                EditorUpdateScheduler.ResetForTests();
+                TestJobManager.DelayCallSchedulerForTests = null;
+                TestJobManager.ResetForTests(clearSessionState: true);
+                SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+                TestRunStatus.ResetForTests();
+                MCPServiceLocator.Reset();
+                Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", oldLockMode);
+            }
+        }
+
     }
 }

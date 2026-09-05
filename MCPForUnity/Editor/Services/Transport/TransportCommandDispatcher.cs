@@ -659,31 +659,16 @@ namespace MCPForUnity.Editor.Services.Transport
                     {
                         try
                         {
-                            SharedEditorOperationLock.ReleaseIfAutoLock(capturedAutoLockToken);
-                            sw?.Stop();
-                            var logStatus = "SUCCESS";
-                            string logError = null;
-                            if (t.IsFaulted)
-                            {
-                                logStatus = "ERROR";
-                                logError = t.Exception?.InnerException?.Message;
-                            }
-                            else if (t.IsCompletedSuccessfully && t.Result != null)
-                            {
-                                try
-                                {
-                                    var resultObj = JObject.Parse(t.Result);
-                                    if (string.Equals(resultObj.Value<string>("status"), "error", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        logStatus = "ERROR";
-                                        logError = resultObj.Value<string>("error");
-                                    }
-                                }
-                                catch { }
-                            }
-                            McpLogRecord.Log(capturedType, capturedParams, capturedLogType,
-                                logStatus, sw?.ElapsedMilliseconds ?? 0, logError, capturedQueueMs);
-                            RegisterDelayCall(() => RemovePending(id, pending));
+                            RegisterDelayCall(() => FinalizeAsyncCommand(
+                                id,
+                                pending,
+                                capturedType,
+                                capturedParams,
+                                capturedLogType,
+                                capturedAutoLockToken,
+                                capturedQueueMs,
+                                sw,
+                                t));
                         }
                         catch (Exception cleanupEx)
                         {
@@ -775,6 +760,54 @@ namespace MCPForUnity.Editor.Services.Transport
             pending.Dispose();
         }
 
+        private static void FinalizeAsyncCommand(
+            string id,
+            PendingCommand pending,
+            string commandType,
+            JObject parameters,
+            string logType,
+            string autoLockToken,
+            long queueMs,
+            System.Diagnostics.Stopwatch stopwatch,
+            Task<string> completion)
+        {
+            try
+            {
+                SharedEditorOperationLock.ReleaseIfAutoLock(autoLockToken);
+                stopwatch?.Stop();
+                var logStatus = "SUCCESS";
+                string logError = null;
+                if (completion.IsFaulted)
+                {
+                    logStatus = "ERROR";
+                    logError = completion.Exception?.InnerException?.Message;
+                }
+                else if (completion.IsCompletedSuccessfully && completion.Result != null)
+                {
+                    try
+                    {
+                        var resultObj = JObject.Parse(completion.Result);
+                        if (string.Equals(resultObj.Value<string>("status"), "error", StringComparison.OrdinalIgnoreCase))
+                        {
+                            logStatus = "ERROR";
+                            logError = resultObj.Value<string>("error");
+                        }
+                    }
+                    catch { }
+                }
+                McpLogRecord.Log(commandType, parameters, logType,
+                    logStatus, stopwatch?.ElapsedMilliseconds ?? 0, logError, queueMs);
+            }
+            catch (Exception cleanupEx)
+            {
+                McpLog.Warn($"Async cleanup failed for {commandType}: {cleanupEx.Message}");
+            }
+            finally
+            {
+                RemovePending(id, pending);
+            }
+        }
+
         private static void RegisterDelayCall(Action action)
         {
             if (DelayCallRegistrarForTests != null)
@@ -783,7 +816,7 @@ namespace MCPForUnity.Editor.Services.Transport
                 return;
             }
 
-            EditorApplication.delayCall += () => action();
+            EditorUpdateScheduler.Enqueue(action);
         }
 
         private static string SerializeError(string message, string commandType = null, string stackTrace = null)

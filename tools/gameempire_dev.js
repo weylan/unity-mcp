@@ -19,6 +19,7 @@ const DEFAULTS = {
   privateRepo: privateRepoFromReleaseDefaults(),
   serverPackageSourceSuffix: RELEASE_DEFAULTS.serverPackageSourceSuffix,
 };
+const IMMUTABLE_PRIVATE_TAG = /^gameempire-mcp-v\d{8}\.\d+$/;
 
 const COMMANDS = new Set([
   "status",
@@ -303,8 +304,8 @@ function runPreflight(opts) {
 }
 
 function updatePrivateSource(opts, tag) {
-  if (!tag) {
-    throw new Error("set-private-source requires a tag, for example gameempire-mcp-v20260506.2");
+  if (!IMMUTABLE_PRIVATE_TAG.test(tag || "")) {
+    throw new Error("set-private-source requires an immutable gameempire-mcp-vYYYYMMDD.N tag");
   }
 
   return updateServerPackageSource(releaseSourceOptions(opts), tag);

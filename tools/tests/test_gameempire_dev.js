@@ -122,4 +122,22 @@ withTempRepo((cwd) => {
   );
 });
 
+function SetPrivateSourceRejectsLatestAndLeavesOtherFilesUntouched() {
+  withTempRepo((cwd) => {
+    const packagePath = path.join(cwd, "MCPForUnity", "package.json");
+    const pyprojectPath = path.join(cwd, "Server", "pyproject.toml");
+    const packageBefore = fs.readFileSync(packagePath, "utf8");
+    const pyprojectBefore = fs.readFileSync(pyprojectPath, "utf8");
+
+    assert.throws(
+      () => updatePrivateSource({ cwd, ...DEFAULTS }, "gameempire-mcp-latest"),
+      /immutable/i
+    );
+    assert.strictEqual(fs.readFileSync(packagePath, "utf8"), packageBefore);
+    assert.strictEqual(fs.readFileSync(pyprojectPath, "utf8"), pyprojectBefore);
+  });
+}
+
+SetPrivateSourceRejectsLatestAndLeavesOtherFilesUntouched();
+
 console.log("ok - gameempire private dev helpers");

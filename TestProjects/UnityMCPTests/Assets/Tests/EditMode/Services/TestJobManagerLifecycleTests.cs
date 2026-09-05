@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Services;
+using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
@@ -54,6 +56,11 @@ namespace MCPForUnityTests.Editor.Services
                 BoundOwner = default;
             }
         }
+
+        public void Complete(TestRunResult result = null)
+        {
+            _completion.TrySetResult(result);
+        }
     }
 
     internal sealed class PublicOnlyTestRunner : ITestRunnerService
@@ -100,6 +107,7 @@ namespace MCPForUnityTests.Editor.Services
         [TearDown]
         public void TearDown()
         {
+            EditorUpdateScheduler.ResetForTests();
             TestJobManager.PersistSnapshotForTests = null;
             TestJobManager.QueuePlayerLoopUpdateForTests = null;
             TestJobManager.DelayCallSchedulerForTests = null;
@@ -128,6 +136,80 @@ namespace MCPForUnityTests.Editor.Services
             Assert.AreEqual(0, _runner.InvocationCount, "Runner side effects require a durable owner claim.");
             Assert.IsFalse(TestJobManager.PhysicalOwnerForTests.HasValue);
             Assert.AreEqual(TestJobPhase.Queued, TestJobManager.GetJob(jobId).Phase);
+        }
+
+        [Test]
+        public void UpdatePumpClaimsOwnerPersistsReceiptAndDoesNotUseDirectDispatchSeam()
+        {
+            TestJobManager.DelayCallSchedulerForTests = null;
+            EditorUpdateScheduler.ResetForTests();
+
+            string jobId = TestJobManager.StartJob(TestMode.EditMode, Filter(), 15_000);
+            Assert.AreEqual(0, _runner.InvocationCount);
+            Assert.AreEqual(1, EditorUpdateScheduler.PendingCountForTests);
+
+            EditorUpdateScheduler.PumpForTests();
+
+            TestJobIdentity owner = TestJobManager.PhysicalOwnerForTests.Value;
+            TestJob job = TestJobManager.GetJob(jobId);
+            Assert.AreEqual(1, _runner.InvocationCount);
+            Assert.AreEqual(owner, _runner.BoundOwner);
+            Assert.IsTrue(job.OwnerPersisted);
+            Assert.AreEqual(TestJobPhase.AwaitingRunStarted, job.Phase);
+
+            Assert.IsTrue(TestJobManager.OnRunStarted(owner, 1));
+            Assert.IsTrue(TestJobManager.GetJob(jobId).RunStarted);
+            Assert.IsTrue(TestJobManager.FinalizePhysicalOwnerFromRunFinished(owner, null));
+        }
+
+        [Test]
+        public void TaskContinuation_IsQueuedFromWorkerAndFinalizedOnEditorUpdate()
+        {
+            TestJobManager.DelayCallSchedulerForTests = null;
+            EditorUpdateScheduler.ResetForTests();
+
+            string jobId = TestJobManager.StartJob(TestMode.EditMode, Filter(), 15_000);
+            EditorUpdateScheduler.PumpForTests();
+            TestJobIdentity owner = TestJobManager.PhysicalOwnerForTests.Value;
+            Assert.IsTrue(TestJobManager.OnRunStarted(owner, 1));
+
+            _runner.Complete();
+            Assert.IsTrue(SpinWait.SpinUntil(() => EditorUpdateScheduler.PendingCountForTests > 0, 3_000),
+                "Worker completion must enqueue terminal cleanup for the editor update pump.");
+            Assert.IsTrue(TestJobManager.PhysicalOwnerForTests.HasValue,
+                "The worker continuation must not finalize the physical owner directly.");
+
+            EditorUpdateScheduler.PumpForTests();
+
+            TestJob terminal = TestJobManager.GetJob(jobId);
+            Assert.AreEqual(TestJobPhase.Terminal, terminal.Phase);
+            Assert.AreEqual(1, terminal.CleanupCount);
+            Assert.IsFalse(TestJobManager.PhysicalOwnerForTests.HasValue);
+        }
+
+        [Test]
+        public void TerminalReceipt_DoesNotClaimForeignAttachedLockWasReleased()
+        {
+            var acquired = SharedEditorOperationLock.TryAcquire("auto", "foreign-test", isExplicit: false);
+            Assert.IsTrue(acquired.Acquired);
+            var foreignOwner = new TestJobIdentity("foreign-job", 73);
+            Assert.IsTrue(SharedEditorOperationLock.AttachToJob(acquired.Token, foreignOwner));
+
+            string jobId = TestJobManager.StartJob(TestMode.EditMode, Filter(), 15_000);
+            InvokeOnlyScheduled();
+            TestJobIdentity owner = TestJobManager.PhysicalOwnerForTests.Value;
+            Assert.IsTrue(TestJobManager.OnRunStarted(owner, 1));
+
+            LogAssert.Expect(LogType.Warning, new Regex("attached lock belongs to a different owner"));
+            Assert.IsTrue(TestJobManager.FinalizePhysicalOwnerFromRunFinished(owner, null));
+
+            TestJob terminal = TestJobManager.GetJob(jobId);
+            Assert.IsFalse(terminal.AttachedLockReleased);
+            Assert.IsTrue(SharedEditorOperationLock.GetState().IsAttachedToJob);
+            JObject serialized = JObject.FromObject(TestJobManager.ToSerializable(
+                terminal, includeDetails: true, includeFailedTests: true));
+            Assert.IsFalse(serialized["receipt"]?.Value<bool>("physical_terminal") ?? true,
+                serialized.ToString());
         }
 
         [Test]
@@ -500,6 +582,21 @@ namespace MCPForUnityTests.Editor.Services
                 "Blocked bytes must remain untouched after rejected work.");
         }
 
+        [Test]
+        public void UnknownV3SnapshotPreservesMigrationFenceAndDoesNotReplay()
+        {
+            const string future = "{\"schema_version\":4,\"current_job_id\":\"future\",\"physical_owner\":{\"job_id\":\"future\",\"generation\":9},\"next_generation\":10,\"jobs\":[{\"job_id\":\"future\",\"generation\":9,\"phase\":\"dispatching\"}],\"future_field\":{\"preserve\":true}}";
+
+            ReloadPersistedSnapshot(future, storageVersion: 3);
+
+            Assert.IsTrue(TestJobManager.IsRestoreBlockedForTests);
+            Assert.AreEqual(future, TestJobManager.RestoreBlockedRawSnapshotForTests);
+            Assert.AreEqual(new TestJobIdentity("future", 9), TestJobManager.PhysicalOwnerForTests.Value);
+            Assert.AreEqual(0, _scheduled.Count, "An unknown snapshot must never replay queued work.");
+            Assert.Throws<InvalidOperationException>(() =>
+                TestJobManager.StartJob(TestMode.EditMode, Filter(), 100));
+        }
+
         private void AssertV3RestoreBlocked(string snapshot, string reason)
         {
             LogAssert.Expect(LogType.Error,
@@ -543,5 +640,6 @@ namespace MCPForUnityTests.Editor.Services
             _scheduled.Clear();
             action();
         }
+
     }
 }

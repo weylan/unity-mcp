@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Helpers;
 using Newtonsoft.Json;
@@ -60,6 +61,13 @@ namespace MCPForUnity.Editor.Services
         public long InitTimeoutMs { get; set; }
         public TestFilterOptions FilterOptions { get; set; }
         public string AttachedLockToken { get; set; }
+        public bool OwnerPersisted { get; set; }
+        public bool RunStarted { get; set; }
+        public long? RunStartedUnixMs { get; set; }
+        public int CleanupCount { get; set; }
+        public int? CleanupThreadId { get; set; }
+        public bool AttachedLockReleased { get; set; }
+        public bool FenceReleased { get; set; }
     }
 
     internal sealed class TestJobClearResult
@@ -360,12 +368,15 @@ namespace MCPForUnity.Editor.Services
 
                 job.Phase = TestJobPhase.Dispatching;
                 long priorUpdate = job.LastUpdateUnixMs;
+                bool priorOwnerPersisted = job.OwnerPersisted;
                 job.LastUpdateUnixMs = Now();
+                job.OwnerPersisted = true;
                 _physicalOwner = identity;
                 if (!PersistToSessionState(force: true, critical: true))
                 {
                     job.Phase = TestJobPhase.Queued;
                     job.LastUpdateUnixMs = priorUpdate;
+                    job.OwnerPersisted = priorOwnerPersisted;
                     _physicalOwner = null;
                     return false;
                 }
@@ -467,6 +478,8 @@ namespace MCPForUnity.Editor.Services
                 job.Phase = TestJobPhase.Running;
                 job.AwaitingRunStartedSinceUnixMs = null;
                 job.LastUpdateUnixMs = now;
+                job.RunStarted = true;
+                job.RunStartedUnixMs = now;
                 job.TotalTests = totalTests;
                 job.CompletedTests = 0;
                 job.CurrentTestFullName = null;
@@ -608,11 +621,35 @@ namespace MCPForUnity.Editor.Services
             bool matchingAttachment = lockState.IsAttachedToJob
                                       && string.Equals(lockState.AttachedJobId, owner.JobId, StringComparison.Ordinal)
                                       && lockState.AttachedJobGeneration == owner.Generation;
-            if (matchingAttachment && !SharedEditorOperationLock.CompleteAttachedJob(owner))
+            bool attachedLockReleased = !lockState.IsAttachedToJob;
+            if (matchingAttachment)
             {
-                McpLog.Warn($"[TestJobManager] Physical terminal persisted for {owner}, but attached lock completion could not be confirmed.");
+                attachedLockReleased = SharedEditorOperationLock.CompleteAttachedJob(owner);
+                if (!attachedLockReleased)
+                {
+                    McpLog.Warn($"[TestJobManager] Physical terminal persisted for {owner}, but attached lock completion could not be confirmed.");
+                }
+            }
+            else if (lockState.IsAttachedToJob)
+            {
+                McpLog.Warn($"[TestJobManager] Physical terminal persisted for {owner}, but the attached lock belongs to a different owner.");
             }
             TestRunStatus.MarkFinished();
+            bool fenceReleased = !TestRunStatus.IsRunning;
+            bool receiptPersisted;
+            lock (LockObj)
+            {
+                job.CleanupCount++;
+                job.CleanupThreadId = Thread.CurrentThread.ManagedThreadId;
+                job.AttachedLockReleased = attachedLockReleased;
+                job.FenceReleased = fenceReleased;
+                job.LastUpdateUnixMs = Now();
+                receiptPersisted = PersistToSessionState(force: true);
+            }
+            if (!receiptPersisted)
+            {
+                McpLog.Warn($"[TestJobManager] Physical cleanup completed for {owner}, but its receipt could not be persisted.");
+            }
             LogPhase(job, "physical_terminal");
             return true;
         }
@@ -864,10 +901,13 @@ namespace MCPForUnity.Editor.Services
         {
             if (job == null) return null;
 
-            object resultPayload = null;
+            JObject resultPayload = null;
             if (job.Status == TestJobStatus.Succeeded && job.Result != null)
             {
-                resultPayload = job.Result.ToSerializable(job.Mode, includeDetails, includeFailedTests);
+                resultPayload = JObject.FromObject(
+                    job.Result.ToSerializable(job.Mode, includeDetails, includeFailedTests));
+                resultPayload["total"] = job.Result.Total;
+                resultPayload["matched"] = job.Result.Total;
             }
 
             bool physicalRetained;
@@ -878,6 +918,16 @@ namespace MCPForUnity.Editor.Services
                                    && _physicalOwner.Value == IdentityOf(job);
                 safeToStart = !_physicalOwner.HasValue && string.IsNullOrEmpty(_currentJobId);
             }
+            bool physicalTerminal = job.Phase == TestJobPhase.Terminal
+                                    && !physicalRetained
+                                    && job.OwnerPersisted
+                                    && job.RunStarted
+                                    && job.CleanupCount == 1
+                                    && job.AttachedLockReleased
+                                    && job.FenceReleased;
+            object receiptOwner = job.OwnerPersisted
+                ? new { job_id = job.JobId, generation = job.Generation }
+                : null;
 
             return new
             {
@@ -912,6 +962,18 @@ namespace MCPForUnity.Editor.Services
                 },
                 error = job.Error,
                 result = resultPayload,
+                receipt = new
+                {
+                    physical_owner = receiptOwner,
+                    owner_persisted = job.OwnerPersisted,
+                    run_started = job.RunStarted,
+                    run_started_unix_ms = job.RunStartedUnixMs,
+                    physical_terminal = physicalTerminal,
+                    cleanup_count = job.CleanupCount,
+                    cleanup_thread_id = job.CleanupThreadId,
+                    attached_lock_released = job.AttachedLockReleased,
+                    fence_released = job.FenceReleased,
+                },
             };
         }
 
@@ -979,6 +1041,13 @@ namespace MCPForUnity.Editor.Services
             public string[] category_names { get; set; }
             public string[] assembly_names { get; set; }
             public string attached_lock_token { get; set; }
+            public bool owner_persisted { get; set; }
+            public bool run_started { get; set; }
+            public long? run_started_unix_ms { get; set; }
+            public int cleanup_count { get; set; }
+            public int? cleanup_thread_id { get; set; }
+            public bool attached_lock_released { get; set; }
+            public bool fence_released { get; set; }
         }
 
         private sealed class PersistedStateV2
@@ -1225,6 +1294,13 @@ namespace MCPForUnity.Editor.Services
                         AssemblyNames = persisted.assembly_names,
                     },
                     AttachedLockToken = persisted.attached_lock_token,
+                    OwnerPersisted = persisted.owner_persisted,
+                    RunStarted = persisted.run_started,
+                    RunStartedUnixMs = persisted.run_started_unix_ms,
+                    CleanupCount = persisted.cleanup_count,
+                    CleanupThreadId = persisted.cleanup_thread_id,
+                    AttachedLockReleased = persisted.attached_lock_released,
+                    FenceReleased = persisted.fence_released,
                 };
                 Jobs[job.JobId] = job;
                 _nextGeneration = Math.Max(_nextGeneration, job.Generation + 1);
@@ -1616,6 +1692,13 @@ namespace MCPForUnity.Editor.Services
                 category_names = job.FilterOptions?.CategoryNames,
                 assembly_names = job.FilterOptions?.AssemblyNames,
                 attached_lock_token = job.AttachedLockToken,
+                owner_persisted = job.OwnerPersisted,
+                run_started = job.RunStarted,
+                run_started_unix_ms = job.RunStartedUnixMs,
+                cleanup_count = job.CleanupCount,
+                cleanup_thread_id = job.CleanupThreadId,
+                attached_lock_released = job.AttachedLockReleased,
+                fence_released = job.FenceReleased,
             };
         }
 
@@ -1664,6 +1747,13 @@ namespace MCPForUnity.Editor.Services
                 InitTimeoutMs = source.InitTimeoutMs,
                 FilterOptions = CloneFilter(source.FilterOptions),
                 AttachedLockToken = source.AttachedLockToken,
+                OwnerPersisted = source.OwnerPersisted,
+                RunStarted = source.RunStarted,
+                RunStartedUnixMs = source.RunStartedUnixMs,
+                CleanupCount = source.CleanupCount,
+                CleanupThreadId = source.CleanupThreadId,
+                AttachedLockReleased = source.AttachedLockReleased,
+                FenceReleased = source.FenceReleased,
             };
         }
 
@@ -1772,14 +1862,14 @@ namespace MCPForUnity.Editor.Services
             }
             else
             {
-                EditorApplication.delayCall += () =>
+                EditorUpdateScheduler.Enqueue(() =>
                 {
                     try { action(); }
                     catch (Exception ex)
                     {
-                        McpLog.Error($"[TestJobManager] Delayed lifecycle action failed: {ex.Message}\n{ex.StackTrace}");
+                        McpLog.Error($"[TestJobManager] Update lifecycle action failed: {ex.Message}\n{ex.StackTrace}");
                     }
-                };
+                });
             }
         }
 
