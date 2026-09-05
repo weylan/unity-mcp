@@ -289,6 +289,158 @@ async def test_get_test_job_forwards_job_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_test_job_preserves_physical_receipt_and_result_counts(monkeypatch):
+    """The public Python boundary must preserve C#'s lifecycle acceptance evidence."""
+    from services.tools.run_tests import get_test_job
+    import services.tools.run_tests as mod
+
+    async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
+        return {
+            "success": True,
+            "data": {
+                "job_id": params["job_id"],
+                "generation": 42,
+                "status": "succeeded",
+                "phase": "terminal",
+                "safe_to_start_new_run": True,
+                "physical_owner_retained": False,
+                "result": {
+                    "mode": "EditMode",
+                    "summary": {
+                        "total": 1,
+                        "passed": 1,
+                        "failed": 0,
+                        "skipped": 0,
+                        "durationSeconds": 0.02,
+                        "resultState": "Passed",
+                    },
+                    "results": [],
+                    "total": 1,
+                    "matched": 1,
+                },
+                "receipt": {
+                    "physical_owner": {
+                        "job_id": params["job_id"],
+                        "generation": 42,
+                    },
+                    "owner_persisted": True,
+                    "run_started": True,
+                    "run_started_unix_ms": 123,
+                    "physical_terminal": True,
+                    "cleanup_count": 1,
+                    "cleanup_thread_id": 1,
+                    "attached_lock_released": True,
+                    "fence_released": True,
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
+
+    resp = await get_test_job(DummyContext(), job_id="job-receipt")
+
+    assert resp.success is True
+    assert resp.data is not None
+    assert resp.data.result is not None
+    assert resp.data.result.total == 1
+    assert resp.data.result.matched == 1
+    assert resp.data.receipt is not None
+    assert resp.data.receipt.physical_owner is not None
+    assert resp.data.receipt.physical_owner.job_id == "job-receipt"
+    assert resp.data.receipt.physical_owner.generation == 42
+    assert resp.data.receipt.owner_persisted is True
+    assert resp.data.receipt.run_started is True
+    assert resp.data.receipt.run_started_unix_ms == 123
+    assert resp.data.receipt.physical_terminal is True
+    assert resp.data.receipt.cleanup_count == 1
+    assert resp.data.receipt.cleanup_thread_id == 1
+    assert resp.data.receipt.attached_lock_released is True
+    assert resp.data.receipt.fence_released is True
+
+
+@pytest.mark.asyncio
+async def test_get_test_job_allows_running_receipt_with_nullable_owner_fields(monkeypatch):
+    """A running C# job has not necessarily recorded owner/run/cleanup timestamps yet."""
+    from services.tools.run_tests import get_test_job
+    import services.tools.run_tests as mod
+
+    async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
+        return {
+            "success": True,
+            "data": {
+                "job_id": params["job_id"],
+                "generation": 43,
+                "status": "running",
+                "phase": "queued",
+                "receipt": {
+                    "physical_owner": None,
+                    "owner_persisted": False,
+                    "run_started": False,
+                    "run_started_unix_ms": None,
+                    "physical_terminal": False,
+                    "cleanup_count": 0,
+                    "cleanup_thread_id": None,
+                    "attached_lock_released": False,
+                    "fence_released": False,
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
+
+    resp = await get_test_job(DummyContext(), job_id="job-running")
+
+    assert resp.success is True
+    assert resp.data is not None
+    assert resp.data.receipt is not None
+    assert resp.data.receipt.physical_owner is None
+    assert resp.data.receipt.run_started_unix_ms is None
+    assert resp.data.receipt.cleanup_thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_get_test_job_allows_legacy_result_without_receipt_fields(monkeypatch):
+    """The new response model remains compatible with an older C# package."""
+    from services.tools.run_tests import get_test_job
+    import services.tools.run_tests as mod
+
+    async def fake_send_with_unity_instance(send_fn, unity_instance, command_type, params, **kwargs):
+        return {
+            "success": True,
+            "data": {
+                "job_id": params["job_id"],
+                "status": "succeeded",
+                "result": {
+                    "mode": "EditMode",
+                    "summary": {
+                        "total": 1,
+                        "passed": 1,
+                        "failed": 0,
+                        "skipped": 0,
+                        "durationSeconds": 0.02,
+                        "resultState": "Passed",
+                    },
+                    "results": [],
+                },
+            },
+        }
+
+    monkeypatch.setattr(
+        mod.unity_transport, "send_with_unity_instance", fake_send_with_unity_instance)
+
+    resp = await get_test_job(DummyContext(), job_id="job-legacy")
+
+    assert resp.success is True
+    assert resp.data is not None
+    assert resp.data.result is not None
+    assert resp.data.result.total is None
+    assert resp.data.result.matched is None
+    assert resp.data.receipt is None
+
+
+@pytest.mark.asyncio
 async def test_focus_target_resolution_reuses_user_scoped_hub_session(monkeypatch):
     import services.tools.run_tests as mod
 

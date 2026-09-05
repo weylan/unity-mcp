@@ -104,6 +104,8 @@ class RunTestsResult(BaseModel):
     mode: str
     summary: RunTestsSummary
     results: list[RunTestsTestResult] | None = None
+    total: int | None = None
+    matched: int | None = None
 
 
 class RunTestsStartData(BaseModel):
@@ -137,6 +139,23 @@ class TestJobProgress(BaseModel):
     failures_capped: bool | None = None
 
 
+class TestJobPhysicalOwner(BaseModel):
+    job_id: str
+    generation: int
+
+
+class TestJobReceipt(BaseModel):
+    physical_owner: TestJobPhysicalOwner | None = None
+    owner_persisted: bool
+    run_started: bool
+    run_started_unix_ms: int | None = None
+    physical_terminal: bool
+    cleanup_count: int
+    cleanup_thread_id: int | None = None
+    attached_lock_released: bool
+    fence_released: bool
+
+
 class GetTestJobData(BaseModel):
     job_id: str
     generation: int | None = None
@@ -156,6 +175,7 @@ class GetTestJobData(BaseModel):
     progress: TestJobProgress | None = None
     error: str | None = None
     result: RunTestsResult | None = None
+    receipt: TestJobReceipt | None = None
 
 
 class GetTestJobResponse(MCPResponse):
