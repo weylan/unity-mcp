@@ -39,6 +39,11 @@ namespace MCPForUnity.Editor.Services
             public bool IsExplicit { get; set; }
             public string AttachedJobId { get; set; }
             public long AttachedJobGeneration { get; set; }
+            public string ChildToken { get; set; }
+            public string ChildHolderHint { get; set; }
+            public string ChildReason { get; set; }
+            public DateTime ChildAcquiredAtUtc { get; set; }
+            public DateTime ChildExpiresAtUtc { get; set; }
 
             public bool IsAttached => !string.IsNullOrEmpty(AttachedJobId);
 
@@ -52,6 +57,11 @@ namespace MCPForUnity.Editor.Services
                 IsExplicit = IsExplicit,
                 AttachedJobId = AttachedJobId,
                 AttachedJobGeneration = AttachedJobGeneration,
+                ChildToken = ChildToken,
+                ChildHolderHint = ChildHolderHint,
+                ChildReason = ChildReason,
+                ChildAcquiredAtUtc = ChildAcquiredAtUtc,
+                ChildExpiresAtUtc = ChildExpiresAtUtc,
             };
         }
 
@@ -65,6 +75,12 @@ namespace MCPForUnity.Editor.Services
             public bool is_explicit { get; set; }
             public string attached_job_id { get; set; }
             public long attached_job_generation { get; set; }
+            // Parse child values only after the parent fence has been restored.
+            public JToken child_token { get; set; }
+            public JToken child_holder_hint { get; set; }
+            public JToken child_reason { get; set; }
+            public JToken child_acquired_unix_ms { get; set; }
+            public JToken child_expires_unix_ms { get; set; }
         }
 
         static SharedEditorOperationLock()
@@ -112,6 +128,29 @@ namespace MCPForUnity.Editor.Services
                         AttachedJobId = persisted.attached_job_id,
                         AttachedJobGeneration = persisted.attached_job_generation,
                     };
+                    if (restored.IsAttached)
+                    {
+                        try
+                        {
+                            string childToken = persisted.child_token?.ToObject<string>();
+                            if (!string.IsNullOrWhiteSpace(childToken))
+                            {
+                                restored.ChildToken = childToken;
+                                restored.ChildHolderHint = persisted.child_holder_hint?.ToObject<string>() ?? "unknown";
+                                restored.ChildReason = persisted.child_reason?.ToObject<string>() ?? string.Empty;
+                                restored.ChildAcquiredAtUtc = FromUnixMs(persisted.child_acquired_unix_ms?.ToObject<long>() ?? 0);
+                                restored.ChildExpiresAtUtc = FromUnixMs(persisted.child_expires_unix_ms?.ToObject<long>() ?? 0);
+                                double durationSeconds = (restored.ChildExpiresAtUtc - restored.ChildAcquiredAtUtc).TotalSeconds;
+                                if (durationSeconds <= 0 || durationSeconds > MaxTtlSeconds)
+                                    throw new InvalidOperationException("Persisted child lease duration is outside its allowed range.");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            ClearChild(restored);
+                            McpLog.Warn($"[EditorLock] Ignoring an invalid persisted child lease while retaining its parent fence: {ex.Message}");
+                        }
+                    }
 
                     // An attached physical owner is a fence, not a TTL lease. It survives until
                     // matching physical terminal evidence. Only unattached explicit leases expire.
@@ -357,6 +396,95 @@ namespace MCPForUnity.Editor.Services
             }
         }
 
+        internal static bool TryAcquireTestChild(
+            TestJobIdentity owner,
+            string holderHint,
+            string reason,
+            int ttlSeconds,
+            DateTime nowUtc,
+            out string token,
+            out DateTime expiresAtUtc)
+        {
+            token = null;
+            expiresAtUtc = default;
+            if (!IsEnabled) return true;
+            EnsureInitialized();
+            lock (SyncRoot)
+            {
+                if (_current == null || !IsAttachedToLocked(owner)) return false;
+                if (!ClearExpiredChildLocked(nowUtc)) return false;
+                if (!string.IsNullOrEmpty(_current.ChildToken)) return false;
+
+                int ttl = ClampTtl(ttlSeconds, isExplicit: false);
+                LockState next = _current.Clone();
+                next.ChildToken = Guid.NewGuid().ToString("N");
+                next.ChildHolderHint = holderHint ?? "unknown";
+                next.ChildReason = reason ?? string.Empty;
+                next.ChildAcquiredAtUtc = nowUtc;
+                next.ChildExpiresAtUtc = nowUtc.AddSeconds(ttl);
+                if (!TryReplaceLocked(next)) return false;
+
+                token = next.ChildToken;
+                expiresAtUtc = next.ChildExpiresAtUtc;
+                McpLog.Info(
+                    $"[EditorLock] CHILD_ACQUIRED holder='{next.ChildHolderHint}' "
+                    + $"reason='{next.ChildReason}' owner={owner} expires={next.ChildExpiresAtUtc:HH:mm:ss}Z");
+                return true;
+            }
+        }
+
+        internal static bool ValidateAndExtendTestChild(
+            string token,
+            TestJobIdentity owner,
+            int additionalSeconds,
+            DateTime nowUtc)
+        {
+            if (!IsEnabled) return true;
+            if (string.IsNullOrEmpty(token)) return false;
+            EnsureInitialized();
+            lock (SyncRoot)
+            {
+                if (_current == null || !IsAttachedToLocked(owner)) return false;
+                if (!ClearExpiredChildLocked(nowUtc)) return false;
+                if (!string.Equals(_current.ChildToken, token, StringComparison.Ordinal)) return false;
+                if (additionalSeconds <= 0) return true;
+
+                LockState next = _current.Clone();
+                DateTime requestedExpiry = next.ChildExpiresAtUtc.AddSeconds(
+                    Math.Min(additionalSeconds, MaxTtlSeconds));
+                DateTime maxExpiry = next.ChildAcquiredAtUtc.AddSeconds(MaxTtlSeconds);
+                next.ChildExpiresAtUtc = requestedExpiry < maxExpiry ? requestedExpiry : maxExpiry;
+                if (!TryReplaceLocked(next)) return false;
+                McpLog.Info(
+                    $"[EditorLock] CHILD_EXTENDED holder='{next.ChildHolderHint}' "
+                    + $"owner={owner} expires={next.ChildExpiresAtUtc:HH:mm:ss}Z");
+                return true;
+            }
+        }
+
+        internal static bool ReleaseTestChild(
+            string token,
+            TestJobIdentity owner,
+            DateTime nowUtc)
+        {
+            if (!IsEnabled) return true;
+            if (string.IsNullOrEmpty(token)) return false;
+            EnsureInitialized();
+            lock (SyncRoot)
+            {
+                if (_current == null || !IsAttachedToLocked(owner)) return false;
+                if (!ClearExpiredChildLocked(nowUtc)) return false;
+                if (!string.Equals(_current.ChildToken, token, StringComparison.Ordinal)) return false;
+
+                string holder = _current.ChildHolderHint;
+                LockState next = _current.Clone();
+                ClearChild(next);
+                if (!TryReplaceLocked(next)) return false;
+                McpLog.Info($"[EditorLock] CHILD_RELEASED holder='{holder}' owner={owner}");
+                return true;
+            }
+        }
+
         internal static bool CompleteAttachedJob(TestJobIdentity owner)
         {
             return FinishAttachment(owner);
@@ -375,6 +503,7 @@ namespace MCPForUnity.Editor.Services
             {
                 if (_current == null || !IsAttachedToLocked(owner)) return false;
                 LockState next = _current.Clone();
+                ClearChild(next);
                 if (_current.IsExplicit && DateTime.UtcNow < _current.ExpiresAtUtc)
                 {
                     next.AttachedJobId = null;
@@ -601,6 +730,33 @@ namespace MCPForUnity.Editor.Services
                    && _current.AttachedJobGeneration == owner.Generation;
         }
 
+        private static bool ClearExpiredChildLocked(DateTime nowUtc)
+        {
+            if (_current == null
+                || string.IsNullOrEmpty(_current.ChildToken)
+                || nowUtc < _current.ChildExpiresAtUtc)
+            {
+                return true;
+            }
+
+            string holder = _current.ChildHolderHint;
+            LockState next = _current.Clone();
+            ClearChild(next);
+            if (!TryReplaceLocked(next)) return false;
+            McpLog.Warn($"[EditorLock] CHILD_EXPIRED holder='{holder}'");
+            return true;
+        }
+
+        private static void ClearChild(LockState state)
+        {
+            if (state == null) return;
+            state.ChildToken = null;
+            state.ChildHolderHint = null;
+            state.ChildReason = null;
+            state.ChildAcquiredAtUtc = default;
+            state.ChildExpiresAtUtc = default;
+        }
+
         private static void EvictIfExpiredLocked()
         {
             if (_current == null || _current.IsAttached || DateTime.UtcNow < _current.ExpiresAtUtc) return;
@@ -645,6 +801,15 @@ namespace MCPForUnity.Editor.Services
                         is_explicit = _current.IsExplicit,
                         attached_job_id = _current.AttachedJobId,
                         attached_job_generation = _current.AttachedJobGeneration,
+                        child_token = _current.ChildToken,
+                        child_holder_hint = _current.ChildHolderHint,
+                        child_reason = _current.ChildReason,
+                        child_acquired_unix_ms = string.IsNullOrEmpty(_current.ChildToken)
+                            ? 0
+                            : ToUnixMs(_current.ChildAcquiredAtUtc),
+                        child_expires_unix_ms = string.IsNullOrEmpty(_current.ChildToken)
+                            ? 0
+                            : ToUnixMs(_current.ChildExpiresAtUtc),
                     };
                     projection = JsonConvert.SerializeObject(persisted);
                 }

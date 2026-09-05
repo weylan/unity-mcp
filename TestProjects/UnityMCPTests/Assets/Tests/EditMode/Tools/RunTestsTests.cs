@@ -178,5 +178,94 @@ namespace MCPForUnityTests.Editor.Tools
             }
         }
 
+        [Test]
+        public void GetTestJob_FailedAssertionResult_RemainsPublicAtTerminal()
+        {
+            var runner = new ControlledJobBoundTestRunner();
+            string oldLockMode = Environment.GetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK");
+            Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", "on");
+            MCPServiceLocator.Reset();
+            TestJobManager.ResetForTests(clearSessionState: true);
+            SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+            TestRunStatus.ResetForTests();
+            MCPServiceLocator.Register<ITestRunnerService>(runner);
+            TestJobManager.DelayCallSchedulerForTests = null;
+            EditorUpdateScheduler.ResetForTests();
+
+            var acquired = SharedEditorOperationLock.TryAcquire("auto", "run_tests", isExplicit: false);
+            Assert.IsTrue(acquired.Acquired);
+
+            try
+            {
+                object queuedResponse = MCPForUnity.Editor.Tools.RunTests.HandleCommand(new JObject
+                {
+                    ["mode"] = "EditMode",
+                    ["testNames"] = new JArray("Expected.FailingAssertion"),
+                    [MCPForUnity.Editor.Tools.RunTests.InternalEditorLockTokenParameter] = acquired.Token,
+                }).GetAwaiter().GetResult();
+                JObject queued = JObject.FromObject(queuedResponse);
+                string jobId = queued["data"]?.Value<string>("job_id");
+                Assert.IsTrue(queued.Value<bool>("success"), queued.ToString());
+
+                EditorUpdateScheduler.PumpForTests();
+                TestJobIdentity owner = TestJobManager.PhysicalOwnerForTests.Value;
+                Assert.IsTrue(TestJobManager.OnRunStarted(owner, 1));
+                TestJobManager.OnLeafTestFinished(
+                    owner,
+                    "Expected.FailingAssertion",
+                    isFailure: true,
+                    message: "expected assertion failure");
+
+                var failedResult = new TestRunResult(
+                    new TestRunSummary(1, 0, 1, 0, 0.01, "Failed"),
+                    new[]
+                    {
+                        new TestRunTestResult(
+                            "FailingAssertion",
+                            "Expected.FailingAssertion",
+                            "Failed",
+                            0.01,
+                            "expected assertion failure",
+                            "stack",
+                            string.Empty),
+                    });
+                runner.Complete(failedResult);
+                Assert.IsTrue(SpinWait.SpinUntil(
+                    () => EditorUpdateScheduler.PendingCountForTests > 0,
+                    3_000));
+                EditorUpdateScheduler.PumpForTests();
+
+                object publicResponse = MCPForUnity.Editor.Tools.GetTestJob.HandleCommand(new JObject
+                {
+                    ["job_id"] = jobId,
+                    ["includeDetails"] = true,
+                    ["includeFailedTests"] = true,
+                });
+                JObject response = JObject.FromObject(publicResponse);
+                Assert.IsTrue(response.Value<bool>("success"), response.ToString());
+                JToken data = response["data"];
+                Assert.AreEqual("failed", data?.Value<string>("status"));
+                Assert.NotNull(data?["result"], response.ToString());
+                Assert.AreEqual(1, data?["result"]?.Value<int>("total"));
+                Assert.AreEqual(1, data?["result"]?.Value<int>("matched"));
+                Assert.AreEqual(1, data?["result"]?["summary"]?.Value<int>("failed"));
+                Assert.AreEqual(
+                    "expected assertion failure",
+                    data?["result"]?["results"]?[0]?.Value<string>("message"));
+                Assert.IsTrue(data?["receipt"]?.Value<bool>("physical_terminal") ?? false);
+                Assert.AreEqual(1, data?["receipt"]?.Value<int>("cleanup_count"));
+            }
+            finally
+            {
+                EditorUpdateScheduler.ResetForTests();
+                TestJobManager.DelayCallSchedulerForTests = null;
+                TestJobManager.ResetForTests(clearSessionState: true);
+                SharedEditorOperationLock.ResetForTests(clearSessionState: true);
+                TestRunStatus.ResetForTests();
+                MCPServiceLocator.Reset();
+                Environment.SetEnvironmentVariable("UNITY_MCP_SHARED_EDITOR_LOCK", oldLockMode);
+            }
+        }
+
     }
 }

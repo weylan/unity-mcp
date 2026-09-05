@@ -12,6 +12,8 @@ namespace MCPForUnityTests.Editor.Helpers
 {
     public class CodexConfigHelperTests
     {
+        private const string TestServerSource = "mcpforunityserver==1.2.3";
+
         /// <summary>
         /// Validates that a TOML args array contains the expected uvx structure:
         /// --from, a mcpforunityserver reference, mcp-for-unity package name,
@@ -24,11 +26,12 @@ namespace MCPForUnityTests.Editor.Helpers
                 argValues.Add((child as TomlString).Value);
 
             Assert.IsTrue(argValues.Contains("--from"), "Args should contain --from");
-            Assert.IsTrue(argValues.Any(a => a.Contains("mcpforunityserver")), "Args should contain PyPI package reference");
             Assert.IsTrue(argValues.Contains("mcp-for-unity"), "Args should contain package name");
 
             // Prerelease builds include --prerelease explicit before --from
             int fromIndex = argValues.IndexOf("--from");
+            Assert.Less(fromIndex + 1, argValues.Count, "--from must have a source argument");
+            Assert.AreEqual(TestServerSource, argValues[fromIndex + 1], "--from must use the fixture's explicit source");
             int prereleaseIndex = argValues.IndexOf("--prerelease");
             if (prereleaseIndex >= 0)
             {
@@ -78,8 +81,8 @@ namespace MCPForUnityTests.Editor.Helpers
         [SetUp]
         public void SetUp()
         {
-            // Ensure per-test deterministic Git URL (ignore developer overrides)
-            EditorPrefs.DeleteKey(EditorPrefKeys.GitUrlOverride);
+            // An absent override selects the installed package's source, not necessarily PyPI.
+            EditorPrefs.SetString(EditorPrefKeys.GitUrlOverride, TestServerSource);
             // Default to stdio mode for existing tests unless specified otherwise
             EditorPrefs.SetBool(EditorPrefKeys.UseHttpTransport, false);
             // Ensure deterministic uvx args ordering for these tests regardless of editor settings
@@ -138,6 +141,7 @@ namespace MCPForUnityTests.Editor.Helpers
                 EditorPrefs.DeleteKey(EditorPrefKeys.DevModeForceServerRefresh);
             }
 
+            EditorConfigurationCache.Instance.Refresh();
         }
 
         [Test]

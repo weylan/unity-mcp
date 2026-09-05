@@ -191,6 +191,25 @@ namespace MCPForUnity.Editor.Services
             }
         }
 
+        internal static bool TryGetRunningPhysicalOwner(out TestJobIdentity owner)
+        {
+            EnsureInitialized();
+            lock (LockObj)
+            {
+                if (_physicalOwner.HasValue
+                    && TryGetPhysicalOwnerJobLocked(_physicalOwner.Value, out TestJob job)
+                    && job.Status == TestJobStatus.Running
+                    && job.Phase == TestJobPhase.Running)
+                {
+                    owner = _physicalOwner.Value;
+                    return true;
+                }
+            }
+
+            owner = default;
+            return false;
+        }
+
         internal static void EnsureInitialized()
         {
             EnsureLifecycleWatchdogSubscribed();
@@ -902,7 +921,7 @@ namespace MCPForUnity.Editor.Services
             if (job == null) return null;
 
             JObject resultPayload = null;
-            if (job.Status == TestJobStatus.Succeeded && job.Result != null)
+            if (job.Result != null)
             {
                 resultPayload = JObject.FromObject(
                     job.Result.ToSerializable(job.Mode, includeDetails, includeFailedTests));

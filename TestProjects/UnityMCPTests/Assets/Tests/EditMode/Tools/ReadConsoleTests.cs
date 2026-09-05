@@ -1,6 +1,8 @@
 using System;
+using System.Reflection;
 using Newtonsoft.Json.Linq;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 using MCPForUnity.Editor.Tools;
 using static MCPForUnityTests.Editor.TestUtilities;
@@ -9,6 +11,33 @@ namespace MCPForUnityTests.Editor.Tools
 {
     public class ReadConsoleTests
     {
+        private PropertyInfo _consoleFlags;
+        private int _originalConsoleFlags;
+
+        [SetUp]
+        public void SetUp()
+        {
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+            var editorAssembly = typeof(EditorApplication).Assembly;
+            var entriesType = editorAssembly.GetType("UnityEditor.LogEntries", true);
+            var flagType = editorAssembly.GetType("UnityEditor.ConsoleWindow+ConsoleFlags", true);
+            _consoleFlags = entriesType.GetProperty("consoleFlags", flags);
+            Assert.IsNotNull(_consoleFlags, "Console visibility must be available to isolate this fixture.");
+            _originalConsoleFlags = (int)_consoleFlags.GetValue(null);
+            int logBit = Convert.ToInt32(Enum.Parse(flagType, "LogLevelLog"));
+            // Native LogEntries applies the Editor's visibility filter before ReadConsole runs.
+            _consoleFlags.SetValue(null, _originalConsoleFlags | logBit);
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            _consoleFlags.SetValue(null, _originalConsoleFlags);
+            Assert.AreEqual(_originalConsoleFlags, (int)_consoleFlags.GetValue(null),
+                "The fixture must restore the Editor's original Console visibility.");
+            TestContext.Out.WriteLine($"Console visibility restored to {_originalConsoleFlags}.");
+        }
+
         [Test]
         public void HandleCommand_Clear_Works()
         {

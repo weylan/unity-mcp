@@ -315,7 +315,7 @@ namespace MCPForUnityTests.Editor.Services.Server
             Assert.That(fileName, Does.Contain("python"));
             Assert.That(arguments, Does.Contain(Path.Combine("src", "main.py")));
             Assert.That(arguments, Does.Contain("--transport http"));
-            Assert.That(arguments, Does.Contain("--http-url http://localhost:8080"));
+            Assert.That(arguments, Does.Contain("--http-url http://127.0.0.1:8080"));
             Assert.That(displayCommand, Does.Not.Contain("uvx"));
             Assert.IsNull(error);
         }
