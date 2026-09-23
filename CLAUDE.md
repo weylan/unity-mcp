@@ -100,6 +100,10 @@ Unity 多版本兼容检查：
 ```bash
 tools/check-unity-versions.sh
 tools/check-unity-versions.sh --full
+
+# License-free Roslyn compile of MCPForUnity. EXTRA_REFS must hold Newtonsoft.Json.dll and
+# nunit.framework.dll; see tools/compile-check.sh for the complete recipe.
+UNITY_DATA=/path/to/Editor/Data UNITY_VERSION=2021.3.45f2 EXTRA_REFS=/path/to/refs tools/compile-check.sh
 ```
 
 本地 headless Unity harness（需要本机有 Hub 激活的 Unity Editor）：

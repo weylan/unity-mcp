@@ -27,6 +27,12 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
         public TaskCompletionSource<string> Tcs;
         public bool IsExecuting;
         public long EnqueuedAtMs;
+
+        /// <summary>
+        /// Connection that queued this command, used to tell a broker resend apart from a
+        /// genuinely new request. Never dereferenced — identity only.
+        /// </summary>
+        public object Owner;
     }
 
     [InitializeOnLoad]
@@ -54,6 +60,11 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
         private const double PortBusyStaleResetSeconds = 60.0;
         private static int heartbeatSeq = 0;
         private static Dictionary<string, QueuedCommand> commandQueue = new();
+        // Commands from one connection are sequential, so identical payloads can legitimately
+        // have multiple queue entries. Keep their IDs grouped by exact payload for broker-resend
+        // lookup without scanning every queued command.
+        private static readonly Dictionary<string, List<string>> resendIndex =
+            new(StringComparer.Ordinal);
         private static int mainThreadId;
         private static int currentUnityPort = 6400;
         private static bool isAutoConnectMode = false;
@@ -262,6 +273,95 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
         // Routed through EditorStateCache so a deferred domain reload (issue #1276) does not
         // pin the bridge off: raw EditorApplication.isCompiling stays true for as long as the
         // reload is held, and this gates bridge startup.
+        /// <summary>
+        /// Number of commands currently queued, read under the queue lock. Diagnostics only —
+        /// callers must not reason about individual entries, since the queue mutates from both
+        /// the listener tasks and the editor update loop.
+        /// </summary>
+        internal static int QueuedCommandCount
+        {
+            get { lock (lockObj) { return commandQueue.Count; } }
+        }
+
+        /// <summary>
+        /// True when an already-queued command is the same payload arriving from a different
+        /// connection — the signature of a broker that reconnected and resent. Payload equality
+        /// alone is not enough: a single connection handles one command at a time, so two
+        /// identical payloads on the same connection are sequential and genuinely distinct.
+        /// </summary>
+        internal static bool IsBrokerResend(
+            string queuedCommandJson, object queuedOwner, string incomingCommandJson, object incomingOwner)
+        {
+            if (queuedOwner == null || incomingOwner == null) return false;
+            if (ReferenceEquals(queuedOwner, incomingOwner)) return false;
+            return string.Equals(queuedCommandJson, incomingCommandJson, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// Finds an in-flight command that <paramref name="incomingOwner"/> is resending.
+        /// Callers must hold <see cref="lockObj"/>.
+        /// </summary>
+        private static QueuedCommand FindBrokerResendTarget(string commandText, object incomingOwner)
+        {
+            if (incomingOwner == null || !resendIndex.TryGetValue(commandText, out var commandIds))
+            {
+                return null;
+            }
+
+            for (int i = commandIds.Count - 1; i >= 0; i--)
+            {
+                string commandId = commandIds[i];
+                if (!commandQueue.TryGetValue(commandId, out var queued))
+                {
+                    commandIds.RemoveAt(i);
+                    continue;
+                }
+
+                if (IsBrokerResend(queued.CommandJson, queued.Owner, commandText, incomingOwner))
+                {
+                    return queued;
+                }
+            }
+
+            if (commandIds.Count == 0)
+            {
+                resendIndex.Remove(commandText);
+            }
+            return null;
+        }
+
+        private static void AddToResendIndex(string commandId, string commandText)
+        {
+            if (!resendIndex.TryGetValue(commandText, out var commandIds))
+            {
+                commandIds = new List<string>();
+                resendIndex[commandText] = commandIds;
+            }
+            commandIds.Add(commandId);
+        }
+
+        /// <summary>Remove a queued command and its broker-resend index entry.</summary>
+        /// <remarks>Callers must hold <see cref="lockObj"/>.</remarks>
+        private static void RemoveQueuedCommand(string commandId)
+        {
+            if (!commandQueue.TryGetValue(commandId, out var queued))
+            {
+                return;
+            }
+
+            commandQueue.Remove(commandId);
+            if (!resendIndex.TryGetValue(queued.CommandJson, out var commandIds))
+            {
+                return;
+            }
+
+            commandIds.Remove(commandId);
+            if (commandIds.Count == 0)
+            {
+                resendIndex.Remove(queued.CommandJson);
+            }
+        }
+
         private static bool IsCompiling() => EditorStateCache.GetActualIsCompiling();
 
         public static void Start()
@@ -402,32 +502,69 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
         public static void Stop()
         {
             Task toWait = null;
+            bool wasRunning;
+            List<TaskCompletionSource<string>> stoppedCommands = null;
             lock (startStopLock)
             {
-                if (!isRunning)
+                wasRunning = isRunning;
+
+                if (wasRunning)
                 {
-                    return;
+                    try
+                    {
+                        isRunning = false;
+
+                        var cancel = cts;
+                        cts = null;
+                        try { cancel?.Cancel(); } catch { }
+
+                        try { listener?.Stop(); } catch { }
+                        try { listener?.Server?.Dispose(); } catch { }
+                        listener = null;
+
+                        toWait = listenerTask;
+                        listenerTask = null;
+                    }
+                    catch (Exception ex)
+                    {
+                        McpLog.Error($"Error stopping StdioBridgeHost: {ex.Message}");
+                    }
                 }
 
-                try
+                lock (lockObj)
                 {
-                    isRunning = false;
-
-                    var cancel = cts;
-                    cts = null;
-                    try { cancel?.Cancel(); } catch { }
-
-                    try { listener?.Stop(); } catch { }
-                    try { listener?.Server?.Dispose(); } catch { }
-                    listener = null;
-
-                    toWait = listenerTask;
-                    listenerTask = null;
+                    if (commandQueue.Count > 0)
+                    {
+                        stoppedCommands = new List<TaskCompletionSource<string>>(commandQueue.Count);
+                        foreach (var queued in commandQueue.Values)
+                        {
+                            if (queued?.Tcs != null)
+                            {
+                                stoppedCommands.Add(queued.Tcs);
+                            }
+                        }
+                        commandQueue.Clear();
+                    }
+                    resendIndex.Clear();
                 }
-                catch (Exception ex)
+            }
+
+            if (stoppedCommands != null)
+            {
+                string stoppedResponse = JsonConvert.SerializeObject(new
                 {
-                    McpLog.Error($"Error stopping StdioBridgeHost: {ex.Message}");
+                    status = "error",
+                    error = "Stdio bridge stopped before command completed",
+                });
+                foreach (var tcs in stoppedCommands)
+                {
+                    try { tcs.TrySetResult(stoppedResponse); } catch { }
                 }
+            }
+
+            if (!wasRunning)
+            {
+                return;
             }
 
             TcpClient[] toClose;
@@ -600,15 +737,49 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                                 continue;
                             }
 
+                            // A command already in flight from a different connection means the
+                            // broker gave up waiting, reconnected and resent it. Running it a
+                            // second time would duplicate side effects (issue #1130), so attach
+                            // to the original instead of queueing a copy.
+                            TaskCompletionSource<string> pending = tcs;
+                            bool bridgeStopped = false;
                             lock (lockObj)
                             {
-                                commandQueue[commandId] = new QueuedCommand
+                                if (!isRunning || token.IsCancellationRequested)
                                 {
-                                    CommandJson = commandText,
-                                    Tcs = tcs,
-                                    IsExecuting = false,
-                                    EnqueuedAtMs = _uptime.ElapsedMilliseconds
-                                };
+                                    bridgeStopped = true;
+                                }
+                                else
+                                {
+                                    QueuedCommand inFlight = FindBrokerResendTarget(commandText, client);
+                                    if (inFlight != null)
+                                    {
+                                        pending = inFlight.Tcs;
+                                        McpLog.Warn("Suppressed duplicate command resent on a new connection; "
+                                                    + "awaiting the in-flight result instead of running it twice.");
+                                    }
+                                    else
+                                    {
+                                        commandQueue[commandId] = new QueuedCommand
+                                        {
+                                            CommandJson = commandText,
+                                            Tcs = tcs,
+                                            IsExecuting = false,
+                                            EnqueuedAtMs = _uptime.ElapsedMilliseconds,
+                                            Owner = client
+                                        };
+                                        AddToResendIndex(commandId, commandText);
+                                    }
+                                }
+                            }
+
+                            if (bridgeStopped)
+                            {
+                                pending.TrySetResult(JsonConvert.SerializeObject(new
+                                {
+                                    status = "error",
+                                    error = "Stdio bridge stopped before command completed",
+                                }));
                             }
 
                             // Force Unity's main loop to iterate even when backgrounded,
@@ -620,11 +791,11 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                             try
                             {
                                 using var respCts = new CancellationTokenSource(FrameIOTimeoutMs);
-                                var completed = await Task.WhenAny(tcs.Task, Task.Delay(FrameIOTimeoutMs, respCts.Token)).ConfigureAwait(false);
-                                if (completed == tcs.Task)
+                                var completed = await Task.WhenAny(pending.Task, Task.Delay(FrameIOTimeoutMs, respCts.Token)).ConfigureAwait(false);
+                                if (completed == pending.Task)
                                 {
                                     respCts.Cancel();
-                                    response = tcs.Task.Result;
+                                    response = pending.Task.Result;
                                     Interlocked.Exchange(ref _consecutiveTimeouts, 0);
                                 }
                                 else
@@ -864,7 +1035,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                         foreach (var sid in staleIds)
                         {
                             var staleCmd = commandQueue[sid];
-                            commandQueue.Remove(sid);
+                            RemoveQueuedCommand(sid);
                             var err = new { status = "error", error = "Command evicted: stuck too long in queue" };
                             try { staleCmd.Tcs.TrySetResult(JsonConvert.SerializeObject(err)); } catch { }
                         }
@@ -885,6 +1056,20 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                 {
                     string id = item.id;
                     QueuedCommand queuedCommand = item.command;
+
+                    // Stop() completes and removes all queued TCS values. A command may already
+                    // have been copied into this work list, so verify that this exact entry is
+                    // still queued before dispatching it to Unity after a stop/start transition.
+                    lock (lockObj)
+                    {
+                        if (!isRunning
+                            || !commandQueue.TryGetValue(id, out var current)
+                            || !ReferenceEquals(current, queuedCommand))
+                        {
+                            continue;
+                        }
+                    }
+
                     string commandText = queuedCommand.CommandJson;
                     TaskCompletionSource<string> tcs = queuedCommand.Tcs;
 
@@ -896,7 +1081,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                             error = "Empty command received",
                         };
                         tcs.SetResult(JsonConvert.SerializeObject(emptyResponse));
-                        lock (lockObj) { commandQueue.Remove(id); }
+                        lock (lockObj) { RemoveQueuedCommand(id); }
                         continue;
                     }
 
@@ -909,7 +1094,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                             result = new { message = "pong" },
                         };
                         tcs.SetResult(JsonConvert.SerializeObject(pingResponse));
-                        lock (lockObj) { commandQueue.Remove(id); }
+                        lock (lockObj) { RemoveQueuedCommand(id); }
                         continue;
                     }
 
@@ -924,7 +1109,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                                 : commandText,
                         };
                         tcs.SetResult(JsonConvert.SerializeObject(invalidJsonResponse));
-                        lock (lockObj) { commandQueue.Remove(id); }
+                        lock (lockObj) { RemoveQueuedCommand(id); }
                         continue;
                     }
 
@@ -973,7 +1158,7 @@ namespace MCPForUnity.Editor.Services.Transport.Transports
                 {
                     lock (lockObj)
                     {
-                        commandQueue.Remove(commandId);
+                        RemoveQueuedCommand(commandId);
                     }
                 }
             }

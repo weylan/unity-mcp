@@ -40,6 +40,7 @@ namespace MCPForUnity.Editor.Tools
         // HandleCommand is public and may be invoked by tests or future non-transport callers.
         // Invalidated on every domain reload because cached assemblies are compiled against
         // MetadataReference.CreateFromFile(_cachedAssemblyPaths), which a project recompile rewrites.
+        private const int MaxCompiledCacheEntries = 64;
         private static readonly Dictionary<string, (Assembly assembly, string usedCompiler)> _assemblyCache
             = new Dictionary<string, (Assembly, string)>();
         private static readonly object _cacheLock = new object();
@@ -291,6 +292,11 @@ namespace MCPForUnity.Editor.Tools
 
             lock (_cacheLock)
             {
+                // Bound the compile shortcut index so a stream of distinct snippets does not
+                // retain every cache entry. Unity's Mono AppDomain cannot unload assemblies
+                // loaded by Assembly.Load; those are reclaimed on the next domain reload.
+                if (_assemblyCache.Count >= MaxCompiledCacheEntries)
+                    _assemblyCache.Clear();
                 _assemblyCache[cacheKey] = (compiled, usedCompiler);
             }
 

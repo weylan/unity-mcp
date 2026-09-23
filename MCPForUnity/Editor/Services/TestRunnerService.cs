@@ -6,10 +6,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using MCPForUnity.Editor.Helpers;
 using UnityEditor;
-using UnityEditor.SceneManagement;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace MCPForUnity.Editor.Services
 {
@@ -650,27 +648,9 @@ namespace MCPForUnity.Editor.Services
 
         private static void SaveDirtyScenesIfNeeded()
         {
-            int sceneCount = SceneManager.sceneCount;
-            for (int i = 0; i < sceneCount; i++)
-            {
-                var scene = SceneManager.GetSceneAt(i);
-                if (scene.isDirty)
-                {
-                    if (string.IsNullOrEmpty(scene.path))
-                    {
-                        McpLog.Warn($"[TestRunnerService] Skipping unsaved scene '{scene.name}': save it manually before running tests.");
-                        continue;
-                    }
-                    try
-                    {
-                        EditorSceneManager.SaveScene(scene);
-                    }
-                    catch (Exception ex)
-                    {
-                        McpLog.Warn($"[TestRunnerService] Failed to save dirty scene '{scene.name}': {ex.Message}");
-                    }
-                }
-            }
+            SceneSaveUtility.SaveDirtyOpenScenes(
+                "[TestRunnerService]",
+                "save it manually before running tests.");
         }
 
         #region Test list helpers
