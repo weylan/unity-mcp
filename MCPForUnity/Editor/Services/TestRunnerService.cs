@@ -33,10 +33,17 @@ namespace MCPForUnity.Editor.Services
 
         static PlayModeOptionsGuard()
         {
-            // After domain reload or editor restart: if a restore is pending and no test run
-            // is active, restore now. TryLoad checks SessionState first, then the marker file.
             TestJobManager.EnsureInitialized();
-            if (TryLoad(out _, out _) && !TestRunStatus.IsRunning)
+            RestoreIfIdle();
+        }
+
+        internal static void RestoreIfIdle()
+        {
+            // TryLoad checks SessionState first, then the marker file. A restored physical owner
+            // must keep its settings until Unity reports a terminal callback.
+            if (TryLoad(out _, out _)
+                && !TestRunStatus.IsRunning
+                && !TestJobManager.HasRunningJob)
             {
                 Restore();
             }
@@ -142,7 +149,7 @@ namespace MCPForUnity.Editor.Services
     /// Concrete implementation of <see cref="ITestRunnerService"/>.
     /// Coordinates Unity Test Runner operations and produces structured results.
     /// </summary>
-    internal sealed class TestRunnerService : ITestRunnerService, IJobBoundTestRunnerService, ICallbacks, IDisposable
+    internal sealed class TestRunnerService : ITestRunnerService, IJobBoundTestRunnerService, IErrorCallbacks, IDisposable
     {
         private static readonly TestMode[] AllModes = { TestMode.EditMode, TestMode.PlayMode };
 
@@ -370,7 +377,7 @@ namespace MCPForUnity.Editor.Services
             _operationLock.Dispose();
         }
 
-        private sealed class BoundCallbacks : ICallbacks
+        private sealed class BoundCallbacks : IErrorCallbacks
         {
             private readonly TestRunnerService _ownerService;
             private readonly TestJobIdentity? _owner;
@@ -383,6 +390,7 @@ namespace MCPForUnity.Editor.Services
 
             public void RunStarted(ITestAdaptor testsToRun) => _ownerService.HandleRunStarted(_owner, testsToRun);
             public void RunFinished(ITestResultAdaptor result) => _ownerService.HandleRunFinished(_owner, result);
+            public void OnError(string message) => _ownerService.HandleRunError(_owner, message);
             public void TestStarted(ITestAdaptor test) => _ownerService.HandleTestStarted(_owner, test);
             public void TestFinished(ITestResultAdaptor result) => _ownerService.HandleTestFinished(_owner, result);
         }
@@ -491,6 +499,40 @@ namespace MCPForUnity.Editor.Services
             if (_runCompletionSource != null)
             {
                 _runCompletionSource.TrySetResult(payload);
+                _runCompletionSource = null;
+            }
+        }
+
+        public void OnError(string message)
+        {
+            HandleRunError(CurrentCallbackOwner(), message);
+        }
+
+        private void HandleRunError(TestJobIdentity? owner, string message)
+        {
+            if (owner.HasValue && !TestJobManager.IsPhysicalOwner(owner.Value))
+            {
+                return;
+            }
+
+            var error = new InvalidOperationException(message ?? "Unity test run failed.");
+            if (owner.HasValue)
+            {
+                TestJobManager.FinalizePhysicalOwnerFromRunError(owner.Value, error.Message);
+            }
+            else
+            {
+                TestRunStatus.MarkFinished();
+            }
+
+            if (_runCompletionSource == null && PlayModeOptionsGuard.IsPending)
+            {
+                PlayModeOptionsGuard.Restore();
+            }
+
+            if (_runCompletionSource != null)
+            {
+                _runCompletionSource.TrySetException(error);
                 _runCompletionSource = null;
             }
         }
@@ -790,7 +832,17 @@ namespace MCPForUnity.Editor.Services
 
         internal static TestRunResult Create(ITestResultAdaptor summary, IReadOnlyList<ITestResultAdaptor> tests)
         {
-            var materializedTests = tests.Select(TestRunTestResult.FromAdaptor).ToList();
+            // RunFinished carries the complete result tree, including callbacks received before
+            // a domain reload recreated this service and emptied its in-memory leaf list.
+            var resultLeaves = new List<ITestResultAdaptor>();
+            if (summary != null && summary.HasChildren)
+            {
+                CollectResultLeaves(summary, resultLeaves);
+            }
+            var materializedTests = (resultLeaves.Count > 0 ? resultLeaves : tests)
+                .Where(t => t != null && t.Test?.IsSuite != true)
+                .Select(TestRunTestResult.FromAdaptor)
+                .ToList();
 
             int passed = summary?.PassCount
                 ?? materializedTests.Count(t => string.Equals(t.State, "Passed", StringComparison.OrdinalIgnoreCase));
@@ -813,6 +865,30 @@ namespace MCPForUnity.Editor.Services
                 summary?.ResultState ?? "Unknown");
 
             return new TestRunResult(summaryPayload, materializedTests);
+        }
+
+        private static void CollectResultLeaves(ITestResultAdaptor result, List<ITestResultAdaptor> leaves)
+        {
+            if (result == null)
+            {
+                return;
+            }
+            if (!result.HasChildren)
+            {
+                if (result.Test?.IsSuite != true)
+                {
+                    leaves.Add(result);
+                }
+                return;
+            }
+            if (result.Children == null)
+            {
+                return;
+            }
+            foreach (var child in result.Children)
+            {
+                CollectResultLeaves(child, leaves);
+            }
         }
     }
 

@@ -420,7 +420,7 @@ namespace MCPForUnity.Editor.Tools
                             return null;
                         }
 
-                        return Assembly.Load(File.ReadAllBytes(outputAssemblyPath));
+                        return UnityAssembliesCompat.LoadFromBytes(File.ReadAllBytes(outputAssemblyPath));
                     }
                     finally
                     {
@@ -617,7 +617,7 @@ namespace MCPForUnity.Editor.Tools
                 try
                 {
                     if (assembly.IsDynamic) continue;
-                    var location = assembly.Location;
+                    var location = UnityAssembliesCompat.GetAssemblyPath(assembly);
                     if (string.IsNullOrEmpty(location)) continue;
                     if (!File.Exists(location)) continue;
                     paths.Add(location);
@@ -981,7 +981,7 @@ namespace MCPForUnity.Editor.Tools
                     }
 
                     ms.Seek(0, SeekOrigin.Begin);
-                    return Assembly.Load(ms.ToArray());
+                    return UnityAssembliesCompat.LoadFromBytes(ms.ToArray());
                 }
             }
             catch (Exception e)

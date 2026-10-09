@@ -10,7 +10,7 @@ using UnityEditor;
 
 namespace MCPForUnityTests.Editor.Helpers
 {
-    public class CodexConfigHelperTests
+    public class CodexConfigHelperTests : TransportPreferenceTestBase
     {
         private const string TestServerSource = "mcpforunityserver==1.2.3";
 

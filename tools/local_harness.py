@@ -67,6 +67,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
@@ -95,6 +96,7 @@ LICENSE_GRACE_S = 120
 # PlayMode init-timeout (ms). C# default is 15000; 120000 is only a docstring
 # recommendation, so the harness passes it explicitly.
 DEFAULT_PLAYMODE_INIT_TIMEOUT_MS = 120000
+NATIVE_RESULT_EXIT_GRACE_S = 15.0
 
 
 # ===========================================================================
@@ -503,17 +505,16 @@ _READY_RE = re.compile(
     r"(Bridge|MCP(For)?Unity|AutoConnect).*(listening|ready|started|port|bound)",
     re.IGNORECASE,
 )
-_REDACT_RE = re.compile(r"(?i)((email|serial|license|password|token)\S*)")
+_REDACT_RE = re.compile(
+    r"(?im)^.*\b(?:e-?mail|serial|license|licensing|password|token|username)\b.*$"
+)
+_EMAIL_RE = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 _CS_ERROR_RE = re.compile(r"error CS\d")
 
 
 def redact(text: str) -> str:
-    """Redact secret-ish tokens from log echoes.
-
-    Mirrors the CI sed idiom
-    `sed -E 's/((email|serial|license|password|token)[^[:space:]]*)/[REDACTED]/Ig'`.
-    """
-    return _REDACT_RE.sub("[REDACTED]", text or "")
+    """Omit credential-related lines, including values separated from their labels."""
+    return _EMAIL_RE.sub("[REDACTED]", _REDACT_RE.sub("[REDACTED]", text or ""))
 
 
 def classify_log(text: str, license_grace_elapsed: bool = True) -> str:
@@ -688,7 +689,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--keep-alive", action="store_true", help="Leave the editor running after legs (no teardown of an owned editor).")
     p.add_argument("--no-warmup", action="store_true", help="Skip the warm-up phase.")
     p.add_argument("--strict-playmode", action="store_true", help="Promote a PlayMode failure to a blocking failure (exit 1).")
-    p.add_argument("--native-editmode", action="store_true", help="Optional CI-parity native -runTests EditMode leg, serialized after resident teardown.")
+    p.add_argument("--native-editmode", action="store_true",
+                   help="Also run a blocking native -runTests EditMode leg after the resident bridge is stopped.")
     p.add_argument(
         "--junit",
         default="reports/junit-e2e-bridge.xml",
@@ -785,6 +787,18 @@ class LocalLauncher:
         ]
 
     @staticmethod
+    def native_editmode_argv(editor: str, project_path: Path, log_path: Path,
+                             results_path: Path, extra_editor_args: list[str]) -> list[str]:
+        return [
+            editor, "-batchmode", "-nographics",
+            "-projectPath", str(project_path),
+            *list(extra_editor_args or []),
+            "-runTests", "-testPlatform", "EditMode",
+            "-testResults", str(results_path),
+            "-logFile", str(log_path),
+        ]
+
+    @staticmethod
     def resident_env(base_env: dict[str, str], status_dir: Path) -> dict[str, str]:
         env = dict(base_env)
         env["UNITY_MCP_ALLOW_BATCH"] = "1"
@@ -812,6 +826,16 @@ class LocalLauncher:
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
         proc = subprocess.Popen(argv, **kwargs)
         return Handle(proc=proc, log_path=str(log_path), pid=proc.pid)
+
+    def launch_native_editmode(self, editor: str, project_path: Path, log_path: Path,
+                               results_path: Path, extra_editor_args: list[str]) -> Handle:
+        proc = subprocess.Popen(self.native_editmode_argv(
+            editor, project_path, log_path, results_path, extra_editor_args))
+        return Handle(proc=proc, log_path=str(log_path), pid=proc.pid)
+
+    def wait_native_editmode(self, handle: Handle, results_path: Path, timeout_s: float) -> int:
+        return wait_for_native_exit(
+            handle.proc, results_path, timeout_s, lambda: self.teardown(handle))
 
     def is_alive(self, handle: Handle) -> bool:
         if handle.proc is not None:
@@ -870,6 +894,7 @@ class DockerLauncher:
     """Reproduces e2e-bridge.yml's docker run exactly; docker-based liveness."""
 
     CONTAINER = "unity-mcp"
+    NATIVE_CONTAINER = "unity-mcp-native-editmode"
 
     def __init__(self, args: argparse.Namespace):
         self.args = args
@@ -877,6 +902,18 @@ class DockerLauncher:
     def resolve_editor(self, project_path: Path) -> EditorSpec:
         # CI short-circuits to the fixed image entrypoint; never touches Hub.
         return EditorSpec(binary="/opt/unity/Editor/Unity", version=self.args.unity_version or "docker")
+
+    @staticmethod
+    def license_mount_args(runner_temp: str | None) -> list[str]:
+        if not runner_temp:
+            return []
+        rt = str(runner_temp)
+        return [
+            "-v", f"{rt}/unity-config:/root/.config/unity3d",
+            "-v", f"{rt}/unity-local:/root/.local/share/unity3d",
+            "-v", f"{rt}/unity-cache:/root/.cache/unity3d",
+            "-v", f"{rt}/unity-machine-id:/etc/machine-id:ro",
+        ]
 
     @staticmethod
     def docker_run_argv(image: str, workspace: Path, project_path: Path, status_dir: Path,
@@ -887,14 +924,7 @@ class DockerLauncher:
         # config / cache volumes the warm-up + activation steps populated so the
         # resident bridge container sees the staged ULF/EBL seat. Locally these
         # mounts are simply omitted.
-        license_mounts: list[str] = []
-        if runner_temp:
-            rt = str(runner_temp)
-            license_mounts = [
-                "-v", f"{rt}/unity-config:/root/.config/unity3d",
-                "-v", f"{rt}/unity-local:/root/.local/share/unity3d",
-                "-v", f"{rt}/unity-cache:/root/.cache/unity3d",
-            ]
+        license_mounts = DockerLauncher.license_mount_args(runner_temp)
         return [
             "docker", "run", "-d", "--name", container, "--network", "host",
             "-e", "HOME=/root",
@@ -909,6 +939,32 @@ class DockerLauncher:
             "-projectPath", str(project_path),
             *list(extra_editor_args or []),
             "-executeMethod", BOOT_METHOD,
+        ]
+
+    @staticmethod
+    def native_editmode_argv(image: str, workspace: Path, project_path: Path,
+                             log_path: Path, results_path: Path,
+                             extra_editor_args: list[str],
+                             container: str = "unity-mcp-native-editmode",
+                             runner_temp: str | None = None) -> list[str]:
+        report_mounts: list[str] = []
+        try:
+            results_path.parent.resolve().relative_to(workspace.resolve())
+        except ValueError:
+            report_mounts = ["-v", f"{results_path.parent}:{results_path.parent}"]
+        return [
+            "docker", "run", "--name", container,
+            "-e", "HOME=/root",
+            "-v", f"{workspace}:{workspace}", "-w", str(workspace),
+            *DockerLauncher.license_mount_args(runner_temp),
+            *report_mounts,
+            image,
+            "/opt/unity/Editor/Unity", "-batchmode", "-nographics",
+            "-projectPath", str(project_path),
+            *list(extra_editor_args or []),
+            "-runTests", "-testPlatform", "EditMode",
+            "-testResults", str(results_path),
+            "-logFile", str(log_path),
         ]
 
     def warmup(self, editor: str, project_path: Path, log_path: Path, timeout_s: int) -> int:
@@ -928,6 +984,28 @@ class DockerLauncher:
         subprocess.run(argv, check=True)
         return Handle(container=self.CONTAINER, log_path=container_log)
 
+    def launch_native_editmode(self, editor: str, project_path: Path, log_path: Path,
+                               results_path: Path, extra_editor_args: list[str]) -> Handle:
+        image = os.environ.get("UNITY_IMAGE", "")
+        workspace = Path(os.environ.get("GITHUB_WORKSPACE", str(REPO_ROOT)))
+        runner_temp = os.environ.get("RUNNER_TEMP")
+        subprocess.run(["docker", "rm", "-f", self.NATIVE_CONTAINER],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        argv = self.native_editmode_argv(
+            image, workspace, project_path, log_path, results_path,
+            extra_editor_args, self.NATIVE_CONTAINER, runner_temp)
+        proc = subprocess.Popen(argv)
+        return Handle(proc=proc, container=self.NATIVE_CONTAINER,
+                      log_path=str(log_path), pid=proc.pid)
+
+    def wait_native_editmode(self, handle: Handle, results_path: Path, timeout_s: float) -> int:
+        try:
+            return wait_for_native_exit(
+                handle.proc, results_path, timeout_s, lambda: self.teardown(handle))
+        finally:
+            subprocess.run(["docker", "rm", "-f", handle.container or self.NATIVE_CONTAINER],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
     def is_alive(self, handle: Handle) -> bool:
         try:
             out = subprocess.run(
@@ -939,13 +1017,24 @@ class DockerLauncher:
             return False
 
     def tail_log(self, handle: Handle, n: int) -> str:
+        container = handle.container or self.CONTAINER
         try:
+            # Unity uses -logFile, so its diagnostics are not on Docker stdout.
+            if handle.log_path:
+                file_log = subprocess.run(
+                    ["docker", "exec", container, "tail", "-n", str(n), handle.log_path],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    check=False, timeout=10,
+                )
+                if file_log.returncode == 0:
+                    return file_log.stdout or ""
             out = subprocess.run(
-                ["docker", "logs", "--tail", str(n), self.CONTAINER],
-                capture_output=True, text=True, check=False,
+                ["docker", "logs", "--tail", str(n), container],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                check=False, timeout=10,
             )
             return (out.stdout or "") + (out.stderr or "")
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
             return ""
 
     def fixup_permissions(self, status_dir: Path) -> None:
@@ -953,12 +1042,52 @@ class DockerLauncher:
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
 
     def teardown(self, handle: Handle, grace_s: float = 10.0) -> None:
-        subprocess.run(["docker", "rm", "-f", self.CONTAINER],
+        subprocess.run(["docker", "rm", "-f", handle.container or self.CONTAINER],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        if handle.proc is not None and handle.proc.poll() is None:
+            try:
+                handle.proc.terminate()
+                handle.proc.wait(timeout=grace_s)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    handle.proc.kill()
+                except OSError:
+                    pass
 
 
 def make_launcher(args: argparse.Namespace):
     return DockerLauncher(args) if args.ci else LocalLauncher(args)
+
+
+def _has_complete_native_results(results_path: Path) -> bool:
+    try:
+        root = ET.parse(results_path).getroot()
+        return root.tag == "test-run" and all(
+            key in root.attrib
+            for key in ("total", "passed", "failed", "inconclusive", "skipped")
+        )
+    except (OSError, ET.ParseError):
+        return False
+
+
+def wait_for_native_exit(proc: Any, results_path: Path, timeout_s: float,
+                         terminate: Callable[[], None]) -> int:
+    """Wait for Unity, bounding its known post-result shutdown hang."""
+    deadline = time.time() + max(0.0, timeout_s)
+    results_ready_at: float | None = None
+    while time.time() < deadline:
+        return_code = proc.poll()
+        if return_code is not None:
+            return int(return_code)
+        if results_ready_at is None and _has_complete_native_results(results_path):
+            results_ready_at = time.time()
+        if (results_ready_at is not None
+                and time.time() - results_ready_at >= NATIVE_RESULT_EXIT_GRACE_S):
+            terminate()
+            return 0
+        time.sleep(0.25)
+    terminate()
+    return -1
 
 
 # ===========================================================================
@@ -1036,6 +1165,20 @@ def _redacted_tail(launcher, handle: Handle, n: int = 200) -> None:
     tail = launcher.tail_log(handle, n)
     if tail:
         print(redact(tail))
+
+
+def preserve_editor_diagnostics(launcher, handle: Handle, reports_dir: Path, stage: str) -> None:
+    """Keep a sanitized snapshot before a retry or teardown removes the Editor log."""
+    tail = redact(launcher.tail_log(handle, 200))
+    if not tail:
+        return
+    print(f"== Unity Editor diagnostics: {stage} ==", flush=True)
+    print(tail, flush=True)
+    try:
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        (reports_dir / f"unity-editor-{stage}.log").write_text(tail, encoding="utf-8")
+    except OSError:
+        print("::warning::Unable to save the Unity Editor diagnostic snapshot.", flush=True)
 
 
 def _console_entries(resp: Any) -> list[Any]:
@@ -1128,10 +1271,39 @@ def run_smoke_leg(instance_id: str, junit_path: Path, max_retries: int, retry_ms
     return LegOutcome("smoke", "error", blocking=True, detail="no bridge reachable", exit_code=2)
 
 
+def prepare_ci_scene(args: argparse.Namespace, instance_id: str, *, send=None) -> bool:
+    """Name the disposable CI scene before smoke can dirty it and block UTF's save task."""
+    if not args.ci or args.reuse:
+        return True
+    if send is None:
+        _ensure_src_on_path()
+        from transport.legacy.unity_connection import send_command_with_retry as send
+    try:
+        response = send(
+            "manage_scene",
+            {"action": "save", "path": "Assets/__MCPHarness", "name": f"Scene_{uuid.uuid4().hex}"},
+            instance_id=instance_id, max_retries=args.max_retries,
+            retry_ms=args.retry_ms, retry_on_reload=True,
+        )
+        if _ok(response):
+            return True
+    except Exception:
+        pass
+    print("::error:: Could not save the disposable CI scene; UTF tests were not started.")
+    return False
+
+
 def _start_utf(send, mode: str, instance_id: str, init_timeout_ms: int | None,
                max_retries: int, retry_ms: int) -> tuple[str | None, dict[str, Any] | Any]:
     """Issue run_tests; return (job_id, raw_start_response). Gates on result.success."""
-    params: dict[str, Any] = {"mode": mode, "includeFailedTests": True}
+    # The private shared-editor guard requires an explicit filter. ``.*`` keeps
+    # this owned harness's historical all-tests behavior while making that
+    # ownership intent explicit on the wire.
+    params: dict[str, Any] = {
+        "mode": mode,
+        "groupNames": [".*"],
+        "includeFailedTests": True,
+    }
     if init_timeout_ms is not None:
         params["initTimeout"] = init_timeout_ms
     # tests_running back-off: a "tests already running" reply is an ErrorResponse
@@ -1171,7 +1343,9 @@ def _poll_utf(send, job_id: str, instance_id: str, deadline: float,
     """
     while time.time() < deadline:
         try:
-            poll = send("get_test_job", {"job_id": job_id, "includeFailedTests": True},
+            # Running jobs have no result payload. Request complete rows for the terminal
+            # response so JUnit represents passes as well as failures and ignored tests.
+            poll = send("get_test_job", {"job_id": job_id, "includeDetails": True},
                         instance_id=instance_id, max_retries=max_retries, retry_ms=retry_ms,
                         retry_on_reload=True)
         except Exception:
@@ -1206,48 +1380,62 @@ def _outcome_from_terminal(name: str, mode: str, terminal: dict[str, Any] | Any,
         return LegOutcome(name, "fail", blocking=blocking, detail="wedge (no terminal status)",
                           exit_code=1, junit_suite=suite)
 
-    if status == "succeeded":
-        result = _dig(terminal, "result") or {}
+    result = _dig(terminal, "result")
+    if status == "succeeded" or (status == "failed" and isinstance(result, dict)):
         summary = (result.get("summary") if isinstance(result, dict) else None) or {}
-        total = int(summary.get("total", 0) or 0)
-        passed = int(summary.get("passed", 0) or 0)
-        failed = int(summary.get("failed", 0) or 0)
-        skipped = int(summary.get("skipped", 0) or 0)
-        duration = float(summary.get("durationSeconds", 0.0) or 0.0)
-        rows = result.get("results") if isinstance(result, dict) else None
-        if isinstance(rows, list) and rows:
+
+        def invalid_results(detail: str) -> LegOutcome:
+            suite.cases.append(JUnitCase(name=f"{mode}.results", failure=detail))
+            return LegOutcome(name, "fail", blocking=blocking, detail=detail,
+                              exit_code=1, junit_suite=suite)
+
+        try:
+            total, passed, failed, skipped = (
+                int(summary.get(key, 0) or 0) for key in ("total", "passed", "failed", "skipped")
+            )
+            if min(total, passed, failed, skipped) < 0 or total != passed + failed + skipped:
+                return invalid_results("inconsistent Unity test summary counts")
+            rows = result.get("results") if isinstance(result, dict) else None
+            if not isinstance(rows, list) or len(rows) != total:
+                return invalid_results("Unity test result rows do not match the complete summary")
+            recorded = {"passed": 0, "failed": 0, "skipped": 0}
             for r in rows:
                 if not isinstance(r, dict):
-                    continue
+                    return invalid_results("invalid Unity test result row")
                 rname = str(r.get("fullName") or r.get("name") or f"{mode}.test")
                 rtime = float(r.get("durationSeconds", 0.0) or 0.0)
-                state = str(r.get("state") or "")
-                if state.lower() in ("failed", "error"):
+                # NUnit ResultState can include a label/site, e.g. Skipped:Ignored.
+                state = str(r.get("state") or "").lower().split(":", 1)[0].split("(", 1)[0]
+                if state in ("failed", "error"):
+                    recorded["failed"] += 1
                     fmsg = str(r.get("message") or "") + "\n" + str(r.get("stackTrace") or "")
-                    suite.cases.append(JUnitCase(name=rname, time_s=rtime, failure=fmsg.strip()))
-                elif state.lower() in ("skipped", "ignored", "inconclusive"):
+                    suite.cases.append(JUnitCase(name=rname, time_s=rtime, failure=fmsg.strip() or "test failed"))
+                elif state in ("skipped", "ignored"):
+                    recorded["skipped"] += 1
                     suite.cases.append(JUnitCase(name=rname, time_s=rtime, skipped=True))
-                else:
+                elif state == "passed":
+                    recorded["passed"] += 1
                     suite.cases.append(JUnitCase(name=rname, time_s=rtime))
-        else:
-            # No per-test rows: synthesize from the summary.
-            for i in range(passed):
-                suite.cases.append(JUnitCase(name=f"{mode}.passed.{i}"))
-            for i in range(failed):
-                suite.cases.append(JUnitCase(name=f"{mode}.failed.{i}", failure="failed (no detail)"))
-            for i in range(skipped):
-                suite.cases.append(JUnitCase(name=f"{mode}.skipped.{i}", skipped=True))
-            if not suite.cases and total == 0:
-                suite.cases.append(JUnitCase(name=f"{mode}.empty", time_s=duration))
+                else:
+                    return invalid_results(f"unsupported Unity test state for {rname}: {state or '<missing>'}")
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return invalid_results("invalid Unity test summary or duration")
+
+        if recorded != {"passed": passed, "failed": failed, "skipped": skipped}:
+            return invalid_results("Unity test result states disagree with the summary counts")
         if failed > 0:
             return LegOutcome(name, "fail", blocking=blocking,
                               detail=f"{failed}/{total} {mode} tests failed", exit_code=1,
                               junit_suite=suite)
+        if status == "failed":
+            return invalid_results(str(_dig(terminal, "error") or "test job failed"))
+        if passed == 0:
+            return invalid_results("Unity did not execute any passing tests")
         return LegOutcome(name, "pass", blocking=blocking,
                           detail=f"{passed}/{total} {mode} tests passed", exit_code=0,
                           junit_suite=suite)
 
-    # status == "failed": data.result is null; surface error + capped failures.
+    # Initialization/runtime failures may have no result: surface error + capped failures.
     error = _dig(terminal, "error") or "test job failed"
     failures = _dig(terminal, "failures_so_far") or []
     detail = str(error)
@@ -1295,7 +1483,8 @@ def _ensure_clean_editmode(send, instance_id: str, max_retries: int, retry_ms: i
 
 def run_playmode_with_retry(instance_id: str, deadline: float, max_retries: int, retry_ms: int,
                             init_timeout_ms: int, strict: bool,
-                            relaunch: Callable[[], str] | None = None) -> LegOutcome:
+                            relaunch: Callable[[], str] | None = None,
+                            before_retry: Callable[[], None] | None = None) -> LegOutcome:
     """PlayMode state machine: start, poll, classify-can-rerun, retry ONCE.
 
     Non-blocking by default; --strict-playmode promotes failure to blocking.
@@ -1326,6 +1515,9 @@ def run_playmode_with_retry(instance_id: str, deadline: float, max_retries: int,
     if not can_rerun:
         return first
 
+    if before_retry is not None:
+        before_retry()
+
     # A wedge may need the editor relaunched (respecting the socket-release delay).
     inst = instance_id
     if "wedge" in error_text and relaunch is not None:
@@ -1335,6 +1527,92 @@ def run_playmode_with_retry(instance_id: str, deadline: float, max_retries: int,
     second = attempt(inst)
     second.detail = f"retry-once: {second.detail}"
     return second
+
+
+def native_editmode_outcome(results_path: Path, runner_exit_code: int,
+                            log_text: str = "") -> LegOutcome:
+    """Convert Unity's native NUnit result into the harness result model."""
+    name = "native-editmode"
+    suite = JUnitSuite(name=name)
+
+    def failed(detail: str, exit_code: int = 1, *, status: str = "fail") -> LegOutcome:
+        if not any(case.failure is not None for case in suite.cases):
+            suite.cases.append(JUnitCase(name=f"{name}.run", failure=detail))
+        return LegOutcome(name, status, blocking=True, detail=detail,
+                          exit_code=exit_code, junit_suite=suite)
+
+    if runner_exit_code == -1:
+        return failed("native EditMode run exceeded the remaining timeout", 2, status="error")
+
+    try:
+        root = ET.parse(results_path).getroot()
+        if root.tag != "test-run":
+            raise ValueError("expected an NUnit test-run result")
+        total = int(root.attrib["total"])
+        passed = int(root.attrib["passed"])
+        failed_count = int(root.attrib["failed"])
+        inconclusive = int(root.attrib["inconclusive"])
+        skipped = int(root.attrib["skipped"])
+        counts = (total, passed, failed_count, inconclusive, skipped)
+        if min(counts) < 0 or passed + failed_count + inconclusive + skipped != total:
+            raise ValueError("invalid NUnit result counts")
+
+        recorded = {"passed": 0, "failed": 0, "inconclusive": 0, "skipped": 0}
+        rows = list(root.iter("test-case"))
+        for index, case in enumerate(rows):
+            case_name = case.get("fullname") or case.get("name") or f"EditMode.test.{index}"
+            duration = float(case.get("duration", "0") or 0)
+            state = (case.get("result") or "").split(":", 1)[0].split("(", 1)[0].lower()
+            if state == "passed":
+                recorded["passed"] += 1
+                suite.cases.append(JUnitCase(name=case_name, time_s=duration))
+            elif state == "skipped":
+                recorded["skipped"] += 1
+                suite.cases.append(JUnitCase(name=case_name, time_s=duration, skipped=True))
+            elif state in ("failed", "inconclusive"):
+                recorded[state] += 1
+                message = (case.findtext("failure/message")
+                           or case.findtext("reason/message") or state).strip()
+                stack = (case.findtext("failure/stack-trace") or "").strip()
+                detail = f"{message}\n{stack}".strip()
+                suite.cases.append(JUnitCase(name=case_name, time_s=duration, failure=detail))
+            else:
+                raise ValueError(f"unsupported NUnit result state for {case_name}: {state or '<missing>'}")
+
+        expected = {
+            "passed": passed,
+            "failed": failed_count,
+            "inconclusive": inconclusive,
+            "skipped": skipped,
+        }
+        if len(rows) != total or recorded != expected:
+            raise ValueError("NUnit test-case records disagree with the summary counts")
+    except (OSError, ET.ParseError, KeyError, TypeError, ValueError, OverflowError) as exc:
+        log_kind = classify_log(log_text, license_grace_elapsed=True)
+        if log_kind == "license_fatal":
+            return failed("native EditMode run has no usable results because Unity licensing failed",
+                          4, status="error")
+        if log_kind == "compile_fatal":
+            return failed("native EditMode run has no usable results because the project does not compile", 3)
+        missing = not results_path.exists()
+        return failed(f"native EditMode result {'is missing' if missing else 'is invalid'}: {exc}",
+                      2 if missing else 1, status="error" if missing else "fail")
+
+    root_state = (root.get("result") or "").split(":", 1)[0].split("(", 1)[0]
+    if failed_count or inconclusive or root_state not in ("Passed", "Skipped"):
+        return failed(
+            f"native EditMode: {passed} passed, {failed_count} failed, "
+            f"{inconclusive} inconclusive, {skipped} skipped",
+        )
+    if passed == 0:
+        return failed("native EditMode did not execute any passing tests")
+    if runner_exit_code != 0:
+        return failed(f"native EditMode runner exited {runner_exit_code} despite a passing result")
+    return LegOutcome(
+        name, "pass", blocking=True,
+        detail=f"{passed}/{total} native EditMode tests passed",
+        exit_code=0, junit_suite=suite,
+    )
 
 
 def write_reports(junit_path: Path, reports_dir: Path, outcomes: list[LegOutcome]) -> None:
@@ -1375,8 +1653,12 @@ def main(argv: list[str] | None = None) -> int:
               f"(allowed: {', '.join(ALLOWED_LEGS)})")
         return 2
     legs = parse_legs(args.legs)
-    if not legs:
+    if not legs and not args.native_editmode:
         print(f"::error:: --legs did not include any valid values (allowed: {', '.join(ALLOWED_LEGS)})")
+        return 2
+    if args.native_editmode and (args.reuse or args.keep_alive):
+        print("::error:: --native-editmode requires ownership of the harness editor; "
+              "it cannot be combined with --reuse or --keep-alive")
         return 2
     if args.ci:
         args.no_warmup = True
@@ -1418,6 +1700,23 @@ def main(argv: list[str] | None = None) -> int:
     handle: Handle | None = None
     owns_editor = not (args.reuse or args.keep_alive)
     outcomes: list[LegOutcome] = []
+
+    def capture_diagnostics(stage: str) -> None:
+        if handle is not None:
+            preserve_editor_diagnostics(launcher, handle, reports_dir, stage)
+
+    def record_outcome(outcome: LegOutcome) -> None:
+        outcomes.append(outcome)
+        if outcome.status in ("fail", "error"):
+            capture_diagnostics(outcome.name)
+
+    def record_scene_setup_failure() -> None:
+        detail = "could not prepare CI scene"
+        record_outcome(LegOutcome(
+            "setup", "error", blocking=True, detail=detail, exit_code=2,
+            junit_suite=JUnitSuite(name="setup", cases=[JUnitCase(name="setup.scene", failure=detail)]),
+        ))
+        write_reports(junit_path, reports_dir, outcomes)
 
     def do_teardown() -> None:
         # Only kill the editor we started; clean only our own status files.
@@ -1536,9 +1835,15 @@ def main(argv: list[str] | None = None) -> int:
             if not compile_ok:
                 print("::error:: project does not compile -- skipping UTF legs")
 
+        # Creating and deleting smoke objects leaves an untitled scene dirty. UTF
+        # cancels its save dialog in batch mode without firing test callbacks.
+        if wants_utf and compile_ok and not prepare_ci_scene(args, instance_id):
+            record_scene_setup_failure()
+            return 2
+
         # --- Smoke leg ---
         if "smoke" in legs:
-            outcomes.append(run_smoke_leg(instance_id, junit_path, args.max_retries,
+            record_outcome(run_smoke_leg(instance_id, junit_path, args.max_retries,
                                           args.retry_ms, deadline=deadline))
 
         # --- EditMode leg ---
@@ -1547,7 +1852,7 @@ def main(argv: list[str] | None = None) -> int:
                 outcomes.append(LegOutcome("editmode", "fail", blocking=True,
                                            detail="project does not compile", exit_code=3))
             else:
-                outcomes.append(run_utf_leg("EditMode", instance_id, blocking=True,
+                record_outcome(run_utf_leg("EditMode", instance_id, blocking=True,
                                             deadline=deadline, max_retries=args.max_retries,
                                             retry_ms=args.retry_ms))
 
@@ -1567,12 +1872,60 @@ def main(argv: list[str] | None = None) -> int:
                     ready = wait_for_ready(launcher, handle, status_dir, args.bridge_wait, time.time(), deadline)
                     instance_id = ready.instance_id
                     os.environ["UNITY_MCP_DEFAULT_INSTANCE"] = instance_id
+                    if not prepare_ci_scene(args, instance_id):
+                        record_scene_setup_failure()
+                        raise SystemExit(2)
                     return instance_id
 
                 relaunch = _relaunch if (owns_editor and not args.reuse) else None
-                outcomes.append(run_playmode_with_retry(
+                record_outcome(run_playmode_with_retry(
                     instance_id, deadline, args.max_retries, args.retry_ms,
-                    args.playmode_init_timeout, bool(args.strict_playmode), relaunch=relaunch))
+                    args.playmode_init_timeout, bool(args.strict_playmode), relaunch=relaunch,
+                    before_retry=lambda: capture_diagnostics("playmode-before-retry")))
+
+        # Unity cannot open one project in two Editor processes. Stop the resident
+        # bridge we own before launching the optional command-line parity run.
+        if args.native_editmode:
+            if handle is not None:
+                launcher.teardown(handle)
+                handle = None
+                time.sleep(SOCKET_RELEASE_MS / 1000.0)
+
+            native_results = reports_dir / "native-editmode-results.xml"
+            native_log = reports_dir / "native-editmode.log"
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            for stale in (native_results, native_log):
+                try:
+                    stale.unlink()
+                except FileNotFoundError:
+                    pass
+
+            native_handle: Handle | None = None
+            try:
+                native_handle = launcher.launch_native_editmode(
+                    spec.binary, project_path, native_log, native_results, args.editor_args)
+                handle = native_handle
+                remaining = max(1.0, deadline - time.time())
+                native_rc = launcher.wait_native_editmode(native_handle, native_results, remaining)
+                log_text = native_log.read_text(encoding="utf-8", errors="replace") \
+                    if native_log.exists() else ""
+                record_outcome(native_editmode_outcome(native_results, native_rc, log_text))
+            except (OSError, subprocess.SubprocessError) as exc:
+                detail = f"could not launch native EditMode: {exc}"
+                record_outcome(LegOutcome(
+                    "native-editmode", "error", blocking=True, detail=detail, exit_code=2,
+                    junit_suite=JUnitSuite(
+                        name="native-editmode",
+                        cases=[JUnitCase(name="native-editmode.launch", failure=detail)],
+                    ),
+                ))
+            finally:
+                if native_handle is not None:
+                    try:
+                        launcher.teardown(native_handle)
+                    except Exception:
+                        pass
+                handle = None
 
         # Aggregate + write reports.
         write_reports(junit_path, reports_dir, outcomes)

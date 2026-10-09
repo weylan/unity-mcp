@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "Unity MCP",
-  "version": "10.2.1-beta.6",
+  "version": "10.3.1-beta.7",
   "description": "AI-powered Unity Editor automation via MCP - manage GameObjects, scripts, materials, scenes, prefabs, VFX, and run tests",
   "author": {
     "name": "Coplay",
@@ -38,6 +38,10 @@
       "description": "Execute multiple Unity operations in a single batch"
     },
     {
+      "name": "blender_bridge",
+      "description": "Drive a running Blender through the BlenderMCP addon and bring its results into Unity"
+    },
+    {
       "name": "create_script",
       "description": "Create new C# scripts"
     },
@@ -70,12 +74,32 @@
       "description": "Search for content within Unity project files"
     },
     {
+      "name": "generate_audio",
+      "description": "Generate sound effects and music with AI models and import them as AudioClips"
+    },
+    {
+      "name": "generate_image",
+      "description": "Generate 2D images with AI providers and import them as textures or sprites"
+    },
+    {
+      "name": "generate_model",
+      "description": "Generate 3D models with AI providers and import them into the project"
+    },
+    {
       "name": "get_sha",
       "description": "Get SHA hash of script content"
     },
     {
       "name": "get_test_job",
       "description": "Get status of async test job"
+    },
+    {
+      "name": "import_model",
+      "description": "Import 3D models from the Sketchfab marketplace into the project"
+    },
+    {
+      "name": "import_model_file",
+      "description": "Import a 3D model file that is already on disk (FBX, OBJ, glTF) into the project"
     },
     {
       "name": "manage_animation",
@@ -96,6 +120,10 @@
     {
       "name": "manage_editor",
       "description": "Control Unity Editor state, play mode, preferences, undo/redo"
+    },
+    {
+      "name": "manage_editor_lock",
+      "description": "Manage the shared Unity editor operation lock across high-risk operations"
     },
     {
       "name": "manage_gameobject",
@@ -120,6 +148,10 @@
     {
       "name": "manage_physics",
       "description": "Manage 3D and 2D physics: settings, collision matrix, materials, joints, queries (raycast, shapecast, linecast, overlap), forces, rigidbody configuration, validation, and simulation"
+    },
+    {
+      "name": "manage_playmode_test",
+      "description": "Run cancellable Play Mode waits and deterministic action sequences"
     },
     {
       "name": "manage_prefabs",
@@ -154,6 +186,10 @@
       "description": "Work with Unity shaders"
     },
     {
+      "name": "manage_sprite",
+      "description": "Slice 2D sprite sheets and build AnimationClips and an AnimatorController from the frames"
+    },
+    {
       "name": "manage_texture",
       "description": "Create and modify textures with patterns, gradients, and noise"
     },
@@ -168,6 +204,10 @@
     {
       "name": "manage_vfx",
       "description": "Manage Visual Effects, particle systems, and trails"
+    },
+    {
+      "name": "nudge_test_job",
+      "description": "Explicitly and temporarily focus the exact local Unity process for an active test job"
     },
     {
       "name": "read_console",
@@ -188,6 +228,10 @@
     {
       "name": "set_active_instance",
       "description": "Set the active Unity Editor instance for multi-instance workflows"
+    },
+    {
+      "name": "simulate_input",
+      "description": "Inject deterministic input while the Unity Editor is in Play Mode"
     },
     {
       "name": "unity_docs",

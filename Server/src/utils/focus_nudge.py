@@ -11,8 +11,10 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import ntpath
 import os
 import platform
+import posixpath
 import re
 import shutil
 import subprocess
@@ -97,7 +99,20 @@ def _return_focus_nudge_result(
 
 
 def canonical_project_root(project_root: str) -> str:
+    windows_drive, _ = ntpath.splitdrive(project_root)
+    if windows_drive and ntpath.isabs(project_root):
+        if os.name != "nt":
+            return ntpath.normcase(ntpath.normpath(project_root))
+    elif posixpath.isabs(project_root) and os.name == "nt":
+        return posixpath.normpath(project_root)
     return os.path.normcase(os.path.realpath(os.path.abspath(project_root)))
+
+
+def _is_absolute_project_root(project_root: str) -> bool:
+    windows_drive, _ = ntpath.splitdrive(project_root)
+    return (
+        bool(windows_drive) and ntpath.isabs(project_root)
+    ) or posixpath.isabs(project_root)
 
 
 def _is_local_peer(peer_host: str) -> bool:
@@ -117,7 +132,7 @@ def validate_focus_target(target: FocusTarget | None) -> str | None:
         return "user_id and session_id are required"
     if not isinstance(target.process_id, int) or target.process_id <= 0:
         return "a positive Unity process_id is required"
-    if not target.project_root.strip() or not os.path.isabs(target.project_root):
+    if not target.project_root.strip() or not _is_absolute_project_root(target.project_root):
         return "an absolute Unity project_root is required"
     if not _is_local_peer(target.peer_host):
         return "focus is allowed only for a loopback peer"

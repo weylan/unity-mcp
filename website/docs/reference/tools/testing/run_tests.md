@@ -36,18 +36,53 @@ A `dict` containing the Unity response. The exact shape depends on the action.
 ## Examples
 
 <!-- examples:start -->
-Start a filtered run, then poll the returned job:
+### Run every EditMode test
+
+```json
+{
+  "mode": "EditMode",
+  "include_failed_tests": true
+}
+```
+
+The call returns immediately with a `job_id`. Poll that exact job; results are not included in the start response:
 
 ```text
-run_tests(mode="EditMode", test_names=["My.Namespace.Tests.Case"])
 get_test_job(job_id="<returned job_id>", wait_timeout=30)
 ```
 
-Recovery is a logical state operation only:
+### Run selected tests
+
+`test_names` accepts full test names, while each `group_names` value is a regular expression matched against full names:
+
+```json
+{
+  "mode": "EditMode",
+  "test_names": ["MyGame.Tests.InventoryTests.AddItem_IncreasesCount"],
+  "group_names": ["^MyGame\\.Tests\\.Inventory"],
+  "include_failed_tests": true
+}
+```
+
+Filters can also be combined with `category_names` and `assembly_names`.
+
+### Run PlayMode tests
+
+```json
+{
+  "mode": "PlayMode",
+  "assembly_names": ["MyGame.PlayModeTests"],
+  "init_timeout": 120000
+}
+```
+
+The initialization timeout starts only after Unity's `Execute` call returns and while `RunStarted` is still pending. PlayMode startup often needs the recommended 120000 ms.
+
+### Recover a logically stuck job
 
 ```text
 run_tests(clear_stuck=true)
 ```
 
-If its response contains `safe_to_start_new_run=false`, do not start another test run until the physical owner terminates or Unity has been restarted.
+This only marks the logical job failed; it does not cancel Unity's physical TestRunner run. Inspect `safe_to_start_new_run` and `physical_owner_retained` in the response. If `safe_to_start_new_run=false`, keep polling the old `job_id` until its physical terminal callback arrives, or restart Unity before starting another run. An `editor_lock_token`, when supplied, remains attached to that physical owner until cleanup completes.
 <!-- examples:end -->

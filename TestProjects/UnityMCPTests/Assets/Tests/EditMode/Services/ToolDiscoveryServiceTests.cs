@@ -304,18 +304,18 @@ namespace MCPForUnity.Editor.Tests.EditMode.Services
         }
 
         [Test]
-        public void DiscoverAllTools_MatchesPublishedForkBaseline_Exactly38Names()
+        public void DiscoverAllTools_MatchesPublishedForkBaseline_Exactly40Names()
         {
             var expected = new[]
             {
-                "batch_execute", "execute_code", "execute_menu_item", "find_gameobjects",
+                "batch_execute", "blender_bridge", "execute_code", "execute_menu_item", "find_gameobjects",
                 "generate_audio", "generate_image", "generate_model", "get_test_job",
                 "import_model", "import_model_file", "manage_animation", "manage_asset",
                 "manage_build", "manage_camera", "manage_components", "manage_editor",
                 "manage_editor_lock", "manage_gameobject", "manage_graphics", "manage_material",
                 "manage_packages", "manage_physics", "manage_playmode_test", "manage_prefabs", "manage_probuilder",
                 "manage_profiler", "manage_scene", "manage_script", "manage_scriptable_object",
-                "manage_shader", "manage_texture", "manage_ui", "manage_vfx", "read_console",
+                "manage_shader", "manage_sprite", "manage_texture", "manage_ui", "manage_vfx", "read_console",
                 "refresh_unity", "run_tests", "simulate_input", "unity_reflect"
             };
 
@@ -326,7 +326,7 @@ namespace MCPForUnity.Editor.Tests.EditMode.Services
                 .OrderBy(name => name, System.StringComparer.Ordinal)
                 .ToArray();
 
-            Assert.AreEqual(38, actual.Length);
+            Assert.AreEqual(40, actual.Length);
             CollectionAssert.AreEqual(expected, actual,
                 "The local lock/visibility adaptation must not add, hide, or rename a built-in tool.");
         }

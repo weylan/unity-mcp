@@ -66,6 +66,24 @@ namespace MCPForUnityTests.Editor.Services
         }
 
         [Test]
+        public void UnknownCommand_IsAnsweredWithoutAnErrorInTheConsole()
+        {
+            TransportCommandDispatcher.SlicingActiveOverrideForTests = () => true;
+            LogAssert.Expect(LogType.Warning, new Regex("no_such_command.*update the package"));
+
+            var task = TransportCommandDispatcher.ExecuteCommandJsonAsync(
+                CommandJson("no_such_command", new JObject()),
+                CancellationToken.None);
+            TransportCommandDispatcher.ProcessQueueForTests();
+
+            var response = JObject.Parse(WaitForTask(task));
+            Assert.AreEqual("error", response.Value<string>("status"));
+            StringAssert.Contains("'no_such_command'", response.Value<string>("error"));
+            Assert.AreEqual("no_such_command", response.Value<string>("command"));
+            Assert.IsNull(response.Value<string>("stackTrace"));
+        }
+
+        [Test]
         public void ResolveReadyLimit_PlayMode_CapsBatchSize()
         {
             Assert.AreEqual(4,

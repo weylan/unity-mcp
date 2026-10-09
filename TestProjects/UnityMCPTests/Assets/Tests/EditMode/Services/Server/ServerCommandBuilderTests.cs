@@ -11,7 +11,7 @@ namespace MCPForUnityTests.Editor.Services.Server
     /// Unit tests for ServerCommandBuilder component.
     /// </summary>
     [TestFixture]
-    public class ServerCommandBuilderTests
+    public class ServerCommandBuilderTests : TransportPreferenceTestBase
     {
         private ServerCommandBuilder _builder;
         private bool _savedUseHttpTransport;
@@ -279,14 +279,21 @@ namespace MCPForUnityTests.Editor.Services.Server
             // Act
             bool result = _builder.TryBuildCommand(out string fileName, out string arguments, out string displayCommand, out string error);
 
-            // Assert - Success depends on uvx availability
+            // Assert - Success depends on uvx or a repository-local virtual environment.
             if (result)
             {
                 Assert.IsNotNull(fileName, "fileName should be set on success");
                 Assert.IsNotNull(arguments, "arguments should be set on success");
                 Assert.IsNotNull(displayCommand, "displayCommand should be set on success");
                 Assert.IsNull(error, "error should be null on success");
-                Assert.That(displayCommand, Does.Contain("uvx").Or.Contain("uv"));
+                string executable = Path.GetFileNameWithoutExtension(fileName);
+                bool usesUv = string.Equals(executable, "uv", System.StringComparison.OrdinalIgnoreCase)
+                              || string.Equals(executable, "uvx", System.StringComparison.OrdinalIgnoreCase);
+                bool usesLocalPython = executable.StartsWith("python", System.StringComparison.OrdinalIgnoreCase)
+                                       && arguments.Replace('\\', '/').IndexOf(
+                                           "/src/main.py", System.StringComparison.OrdinalIgnoreCase) >= 0;
+                Assert.IsTrue(usesUv || usesLocalPython,
+                    $"Command should use uv/uvx or a local Python entrypoint: {displayCommand}");
             }
             else
             {

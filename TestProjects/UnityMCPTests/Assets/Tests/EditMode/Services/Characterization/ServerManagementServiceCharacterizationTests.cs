@@ -19,7 +19,7 @@ namespace MCPForUnityTests.Editor.Services.Characterization
     /// no regressions during the decomposition into focused components.
     /// </summary>
     [TestFixture]
-    public class ServerManagementServiceCharacterizationTests
+    public class ServerManagementServiceCharacterizationTests : TransportPreferenceTestBase
     {
         private ServerManagementService _service;
         private bool _savedUseHttpTransport;
@@ -592,12 +592,18 @@ namespace MCPForUnityTests.Editor.Services.Characterization
             // Act
             bool result = _service.TryGetLocalHttpServerCommand(out string command, out string error);
 
-            // Assert - Success depends on uvx availability
+            // Assert - Success depends on uvx or a repository-local virtual environment.
             if (result)
             {
                 Assert.IsNotNull(command, "Command should be set on success");
                 Assert.IsNull(error, "Error should be null on success");
-                Assert.That(command, Does.Contain("uvx").Or.Contain("uv"), "Command should reference uvx/uv");
+                string normalizedCommand = command.Replace('\\', '/');
+                bool usesUv = command.IndexOf("uvx", StringComparison.OrdinalIgnoreCase) >= 0
+                              || command.IndexOf("uv ", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool usesLocalPython = command.IndexOf("python", StringComparison.OrdinalIgnoreCase) >= 0
+                                       && normalizedCommand.IndexOf("/src/main.py", StringComparison.OrdinalIgnoreCase) >= 0;
+                Assert.IsTrue(usesUv || usesLocalPython,
+                    $"Command should use uv/uvx or a local Python entrypoint: {command}");
             }
             else
             {

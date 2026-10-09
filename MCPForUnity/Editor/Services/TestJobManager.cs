@@ -572,6 +572,16 @@ namespace MCPForUnity.Editor.Services
             return FinalizePhysicalOwner(owner, resultPayload, null);
         }
 
+        internal static bool FinalizePhysicalOwnerFromRunError(
+            TestJobIdentity owner,
+            string message)
+        {
+            return FinalizePhysicalOwner(
+                owner,
+                null,
+                string.IsNullOrWhiteSpace(message) ? "Unity test run failed." : message);
+        }
+
         private static bool FinalizePhysicalOwner(
             TestJobIdentity owner,
             TestRunResult resultPayload,

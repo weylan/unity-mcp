@@ -13,11 +13,27 @@ from utils.focus_nudge import (
     _find_unity_pid_by_project_path,
     _focus_any_unity_macos,
     _focus_app_macos,
+    validate_focus_target,
     should_nudge,
     reset_nudge_backoff,
     nudge_unity_focus,
     _is_available,
 )
+
+
+@pytest.mark.parametrize(
+    "project_root",
+    ["/Users/test/UnityProject", r"C:\Work\UnityProject", r"\\server\share\UnityProject"],
+)
+def test_focus_target_accepts_absolute_paths_independent_of_test_host(project_root):
+    target = FocusTarget("local", "session", 42, project_root, "127.0.0.1")
+    assert validate_focus_target(target) is None
+
+
+@pytest.mark.parametrize("project_root", ["UnityProject", r"C:UnityProject", r"\UnityProject"])
+def test_focus_target_rejects_relative_or_drive_relative_paths(project_root):
+    target = FocusTarget("local", "session", 42, project_root, "127.0.0.1")
+    assert validate_focus_target(target) == "an absolute Unity project_root is required"
 
 
 def test_extract_project_root_preserves_unquoted_spaces_until_next_unity_option():

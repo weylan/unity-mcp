@@ -858,7 +858,7 @@ wheels = [
 
 [[package]]
 name = "mcpforunityserver"
-version = "10.2.1-beta.6"
+version = "10.3.1-beta.7"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

@@ -15,7 +15,7 @@ MCP for Unity ships 51 tools, but exposing all of them to the LLM at once balloo
 | Group | Default | Description |
 |---|---|---|
 | `core` | enabled | Essential scene, script, asset, and editor tools — always on. |
-| `animation` | off | Animator control, AnimationClip creation. |
+| `animation` | off | Animator control, AnimationClip creation, 2D sprite-sheet animation. |
 | `ui` | off | UI Toolkit — UXML, USS, UIDocument. |
 | `vfx` | off | VFX Graph, shaders, procedural textures. |
 | `scripting_ext` | off | ScriptableObject management. |
@@ -23,6 +23,7 @@ MCP for Unity ships 51 tools, but exposing all of them to the LLM at once balloo
 | `probuilder` | off | ProBuilder 3D modeling. Requires `com.unity.probuilder` package. |
 | `profiling` | off | Profiler session control, counters, memory snapshots, Frame Debugger. |
 | `docs` | off | Unity API reflection and documentation lookup. |
+| `asset_gen` | off | AI asset generation (3D model, image, audio; bring your own key) and the Blender Bridge. |
 
 ## Enabling a group
 
