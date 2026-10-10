@@ -33,5 +33,10 @@ def log_execution(name: str, type_label: str):
                 logger.info(f"{type_label} '{name}' failed: {e}")
                 raise
 
-        return _async_wrapper if inspect.iscoroutinefunction(func) else _sync_wrapper
+        wrapper = _async_wrapper if inspect.iscoroutinefunction(func) else _sync_wrapper
+        # Python 3.14 no longer copies ``__annotations__`` in functools.wraps.
+        # FastMCP uses these annotations when registering dynamically generated
+        # custom tools, so preserve them explicitly after wrapping.
+        wrapper.__annotations__ = getattr(func, "__annotations__", {}).copy()
+        return wrapper
     return decorator

@@ -103,7 +103,12 @@ def telemetry_tool(tool_name: str):
                 except Exception:
                     _log.debug("record_tool_usage failed", exc_info=True)
 
-        return _async_wrapper if inspect.iscoroutinefunction(func) else _sync_wrapper
+        wrapper = _async_wrapper if inspect.iscoroutinefunction(func) else _sync_wrapper
+        # Python 3.14 no longer copies ``__annotations__`` in functools.wraps.
+        # Keep generated tool signatures visible to FastMCP after telemetry wraps
+        # the handler.
+        wrapper.__annotations__ = getattr(func, "__annotations__", {}).copy()
+        return wrapper
     return decorator
 
 
@@ -160,5 +165,7 @@ def telemetry_resource(resource_name: str):
                 except Exception:
                     _log.debug("record_resource_usage failed", exc_info=True)
 
-        return _async_wrapper if inspect.iscoroutinefunction(func) else _sync_wrapper
+        wrapper = _async_wrapper if inspect.iscoroutinefunction(func) else _sync_wrapper
+        wrapper.__annotations__ = getattr(func, "__annotations__", {}).copy()
+        return wrapper
     return decorator

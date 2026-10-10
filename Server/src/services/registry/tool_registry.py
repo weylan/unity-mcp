@@ -96,14 +96,25 @@ def mcp_for_unity_tool(
                 "Expected None or a non-empty string."
             )
 
-        _tool_registry.append({
+        tool_info = {
             'func': func,
             'name': tool_name,
             'description': description,
             'unity_target': normalized_unity_target,
             'group': resolved_group,
             'kwargs': tool_kwargs,
-        })
+        }
+
+        # Module discovery can revisit a module after a test or an editor reload
+        # clears and rebuilds part of the registry. Tool names are the MCP
+        # identity, so retain one current definition instead of exposing duplicate
+        # registrations to FastMCP and downstream visibility logic.
+        for index, registered in enumerate(_tool_registry):
+            if registered['name'] == tool_name:
+                _tool_registry[index] = tool_info
+                break
+        else:
+            _tool_registry.append(tool_info)
 
         return func
 
