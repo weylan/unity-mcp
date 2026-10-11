@@ -2,7 +2,6 @@
 MCP Resources package - Auto-discovers and registers all resources in this directory.
 """
 import functools
-import inspect
 import logging
 from pathlib import Path
 
@@ -72,38 +71,18 @@ def register_all_resources(mcp: FastMCP, *, project_scoped_tools: bool = True):
                 "Skipping custom_tools resource registration (project-scoped tools disabled)")
             continue
 
-        # Check if URI contains query parameters (e.g., {?unity_instance})
-        has_query_params = '{?' in uri
+        wrapped = _serialize_pydantic(func)
+        wrapped = log_execution(resource_name, "Resource")(wrapped)
+        wrapped = telemetry_resource(resource_name)(wrapped)
 
-        if has_query_params:
-            wrapped_template = _serialize_pydantic(func)
-            wrapped_template = log_execution(resource_name, "Resource")(wrapped_template)
-            wrapped_template = telemetry_resource(
-                resource_name)(wrapped_template)
-            wrapped_template = mcp.resource(
-                uri=uri,
-                name=resource_name,
-                description=description,
-                **kwargs,
-            )(wrapped_template)
-            logger.debug(
-                f"Registered resource template: {resource_name} - {uri}")
-            registered_count += 1
-            resource_info['func'] = wrapped_template
-        else:
-            wrapped = _serialize_pydantic(func)
-            wrapped = log_execution(resource_name, "Resource")(wrapped)
-            wrapped = telemetry_resource(resource_name)(wrapped)
-            wrapped = mcp.resource(
-                uri=uri,
-                name=resource_name,
-                description=description,
-                **kwargs,
-            )(wrapped)
-            resource_info['func'] = wrapped
-            logger.debug(
-                f"Registered resource: {resource_name} - {description}")
-            registered_count += 1
+        mcp.resource(
+            uri=uri,
+            name=resource_name,
+            description=description,
+            **kwargs,
+        )(wrapped)
+        logger.debug("Registered resource: %s - %s", resource_name, uri)
+        registered_count += 1
 
     logger.info(
         f"Registered {registered_count} MCP resources ({len(resources)} unique)")
